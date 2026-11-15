@@ -34,7 +34,8 @@ for kind in KINDS:
             ench = [ench]
         levels = [0] + sorted(int(e["@enchantmentlevel"]) for e in ench if int(e["@enchantmentlevel"]) <= 4)
         es, en = names.get(uid, (uid, uid))
-        out.append({"id": uid, "es": es, "en": en, "c": cat, "s": sub, "t": tier, "e": levels})
+        out.append({"id": uid, "es": es, "en": en, "c": cat, "s": sub, "t": tier, "e": levels,
+                    "w": float(it.get("@weight", 0) or 0)})
 
 out.sort(key=lambda x: (x["c"], x["s"], x["id"]))
 dst = os.path.join(os.path.dirname(__file__), "..", "data", "items.json")

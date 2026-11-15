@@ -1,15 +1,17 @@
 """Almacén local de precios (SQLite). Guarda el precio más reciente de cada objeto/calidad/mercado."""
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import threading
 import time
 from typing import Dict, Optional, Tuple
 
-# clave: (item_id, calidad, ubicación, tipo) -> (precio, timestamp, origen)
+# clave: (item_id, calidad, ubicación, tipo) -> (precio, timestamp, origen, profundidad)
+# profundidad: [[precio, cantidad], ...] del mejor al peor, o None si no se conoce (datos de la API)
 Key = Tuple[str, int, str, str]
-Entry = Tuple[int, float, str]
+Entry = Tuple[int, float, str, Optional[list]]
 
 
 def default_db_path() -> str:
@@ -30,25 +32,32 @@ class PriceStore:
                 price INTEGER, ts REAL, source TEXT,
                 PRIMARY KEY (server, item, quality, location, kind))"""
         )
+        cols = [r[1] for r in self._db.execute("PRAGMA table_info(prices)")]
+        if "book" not in cols:  # migración desde la v1.0
+            self._db.execute("ALTER TABLE prices ADD COLUMN book TEXT")
         self._db.commit()
         self.version = 0  # aumenta cada vez que cambian los datos
 
     def upsert(self, server: str, prices: Dict[Key, int], ts: Optional[float] = None,
-               source: str = "juego", timestamps: Optional[Dict[Key, float]] = None) -> int:
+               source: str = "juego", timestamps: Optional[Dict[Key, float]] = None,
+               books: Optional[Dict[Key, list]] = None) -> int:
         """Guarda precios; solo sustituye si el dato nuevo es igual o más reciente. Devuelve cuántos se guardaron."""
         now = ts if ts is not None else time.time()
         rows = []
         for (item, q, loc, kind), price in prices.items():
             t = timestamps.get((item, q, loc, kind), now) if timestamps else now
-            rows.append((server, item, int(q), loc, kind, int(price), float(t), source))
+            book = books.get((item, q, loc, kind)) if books else None
+            rows.append((server, item, int(q), loc, kind, int(price), float(t), source,
+                         json.dumps(book) if book else None))
         if not rows:
             return 0
         with self._lock:
             before = self._db.total_changes
             self._db.executemany(
-                """INSERT INTO prices VALUES (?,?,?,?,?,?,?,?)
+                """INSERT INTO prices (server, item, quality, location, kind, price, ts, source, book)
+                   VALUES (?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(server, item, quality, location, kind) DO UPDATE SET
-                     price=excluded.price, ts=excluded.ts, source=excluded.source
+                     price=excluded.price, ts=excluded.ts, source=excluded.source, book=excluded.book
                    WHERE excluded.ts >= prices.ts""",
                 rows,
             )
@@ -62,10 +71,11 @@ class PriceStore:
         min_ts = time.time() - max_age_hours * 3600
         with self._lock:
             cur = self._db.execute(
-                "SELECT item, quality, location, kind, price, ts, source FROM prices WHERE server=? AND ts>=?",
+                "SELECT item, quality, location, kind, price, ts, source, book FROM prices WHERE server=? AND ts>=?",
                 (server, min_ts),
             )
-            return {(r[0], r[1], r[2], r[3]): (r[4], r[5], r[6]) for r in cur}
+            return {(r[0], r[1], r[2], r[3]): (r[4], r[5], r[6], json.loads(r[7]) if r[7] else None)
+                    for r in cur}
 
     def count_live(self, server: str, since_hours: float = 24) -> int:
         with self._lock:

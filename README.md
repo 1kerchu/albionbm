@@ -41,6 +41,22 @@ lista de órdenes y la app la lee.
 
 Los precios se guardan en `%APPDATA%\AlbionBM\precios.sqlite3`, así que no se pierden al cerrar.
 
+## Preguntarle a Claude en qué invertir
+
+1. Lee los mercados en el juego (cuantos más, mejor) y, si quieres, pulsa **Completar con la API**.
+2. Escribe tu dinero en **Capital** (por ejemplo `25000000`) y ajusta los filtros.
+3. Pulsa **Exportar para Claude**. El informe se copia al portapapeles y se guarda en
+   `Documentos\AlbionBM\informe_albionbm_FECHA.md`.
+4. Pégalo (Ctrl+V) o adjunta el archivo en una conversación con Claude y pregunta, por ejemplo:
+   *«Tengo 25 millones, ¿en qué me vale más la pena invertir?»*
+
+El informe incluye instrucciones para el asistente, tu configuración (servidor, prémium, impuestos), un
+reparto automático propuesto por la app y hasta 150 oportunidades con:
+- precio de compra y lo que paga el Mercado Negro;
+- **unidades disponibles con beneficio**, inversión máxima y beneficio total, calculados con la
+  profundidad de órdenes leída del juego;
+- peso por unidad, antigüedad de los datos y origen (juego o API).
+
 ## Cómo calcula el beneficio
 
 | Concepto | Fórmula |
@@ -64,7 +80,8 @@ antigüedad del precio más viejo de los dos.
 | `albionbm/capture.py` | Captura pasiva con Scapy + Npcap |
 | `albionbm/store.py` | Base de datos local de precios (SQLite) |
 | `albionbm/api.py` | Cliente de la API de Albion Online Data Project |
-| `albionbm/calc.py` | Cálculo de oportunidades |
+| `albionbm/calc.py` | Cálculo de oportunidades, unidades disponibles y reparto del capital |
+| `albionbm/export.py` | Informe en Markdown para pegárselo a Claude |
 | `albionbm/gui.py` | Ventana (Tkinter) |
 | `data/items.json` | Objetos que compra el Mercado Negro (T4–T8, nombres en español) |
 | `scripts/build_items.py` | Regenera `data/items.json` cuando sale contenido nuevo |

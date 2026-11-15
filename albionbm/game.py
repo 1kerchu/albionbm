@@ -116,12 +116,28 @@ def best_prices(orders: List[Order]) -> Dict[tuple, int]:
     return best
 
 
+BOOK_LEVELS = 15
+
+
+def order_books(orders: List[Order]) -> Dict[tuple, List[List[int]]]:
+    """Profundidad por (objeto, calidad, ubicación, tipo): [[precio, cantidad], ...] del mejor al peor."""
+    agg: Dict[tuple, Dict[int, int]] = {}
+    for o in orders:
+        lv = agg.setdefault((o.item_id, o.quality, o.location, o.kind), {})
+        lv[o.price] = lv.get(o.price, 0) + max(o.amount, 0)
+    out = {}
+    for k, lv in agg.items():
+        levels = sorted(lv.items(), reverse=(k[3] == "request"))
+        out[k] = [[p, a] for p, a in levels[:BOOK_LEVELS]]
+    return out
+
+
 class GameListener:
     """Conecta el parser Photon con el estado del juego y avisa cuando llegan precios."""
 
     ENCRYPTION_WINDOW = 3.0
 
-    def __init__(self, on_prices: Callable[[str, Optional[str], Dict[tuple, int]], None],
+    def __init__(self, on_prices: Callable[[str, Optional[str], Dict[tuple, int], Dict[tuple, list]], None],
                  on_status: Optional[Callable[[str, str], None]] = None):
         self.on_prices = on_prices
         self.on_status = on_status or (lambda kind, msg: None)
@@ -172,7 +188,7 @@ class GameListener:
                 if self.encrypted:
                     self.encrypted = False
                     self.on_status("encrypted", "")
-                self.on_prices(self.server or "", self.location, best_prices(orders))
+                self.on_prices(self.server or "", self.location, best_prices(orders), order_books(orders))
             return
 
         # 2) Entrada a una zona (Join): parámetro 8 = ID de ubicación, 2 = nombre del personaje

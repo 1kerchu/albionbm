@@ -13,6 +13,7 @@ from typing import Dict, List, Optional
 from . import __version__
 from .api import fetch_prices, rows_to_prices
 from .calc import QUALITY_NAMES, Opportunity, best_per_item, compute
+from .export import build_report, save_report
 from .capture import Capture, CaptureError
 from .game import BLACK_MARKET, CITIES, GameListener
 from .items import CATEGORY_NAMES, Catalog, load_items
@@ -24,7 +25,7 @@ MAX_ROWS = 1000
 
 DEFAULTS = {
     "server": "Automático", "premium": True, "buy_mode": "instant", "best_only": True,
-    "min_pct": "10", "min_silver": "5000", "max_cost": "", "max_age": "6", "search": "",
+    "min_pct": "10", "min_silver": "5000", "max_cost": "", "max_age": "6", "search": "", "capital": "",
     "cats": ["weapons", "armors", "head", "shoes", "offhands", "bags", "capes"],
     "tiers": [4, 5, 6], "enchs": [0, 1], "quals": [1, 2, 3], "cities": list(CITIES),
 }
@@ -36,6 +37,10 @@ def settings_path() -> str:
 
 def fmt(n) -> str:
     return f"{int(n):,}".replace(",", ".")
+
+
+def fmtn(n) -> str:
+    return "—" if n is None else fmt(n)
 
 
 def ago(h: float) -> str:
@@ -166,13 +171,14 @@ class App:
         ttk.Label(row2, text="Buscar:").pack(side="left")
         self.search_var = tk.StringVar(value=s["search"])
         self.search_var.trace_add("write", lambda *a: self._filters_changed())
-        ttk.Entry(row2, textvariable=self.search_var, width=28).pack(side="left", padx=(4, 16))
+        ttk.Entry(row2, textvariable=self.search_var, width=22).pack(side="left", padx=(4, 12))
         self.entries: Dict[str, tk.StringVar] = {}
-        for key, label in [("min_pct", "Beneficio mín. %"), ("min_silver", "Beneficio mín. plata"),
-                           ("max_cost", "Presupuesto máx."), ("max_age", "Datos máx. (horas)")]:
+        for key, label in [("min_pct", "Benef. mín. %"), ("min_silver", "Benef. mín. plata"),
+                           ("max_cost", "Presupuesto máx."), ("max_age", "Datos máx. (h)"),
+                           ("capital", "Capital")]:
             ttk.Label(row2, text=label).pack(side="left")
             var = tk.StringVar(value=s[key])
-            ttk.Entry(row2, textvariable=var, width=10).pack(side="left", padx=(4, 14))
+            ttk.Entry(row2, textvariable=var, width=10 if key == "capital" else 8).pack(side="left", padx=(4, 10))
             var.trace_add("write", lambda *a: self._filters_changed())
             self.entries[key] = var
 
@@ -188,14 +194,16 @@ class App:
         self.count_var = tk.StringVar()
         ttk.Label(bar, textvariable=self.count_var, foreground="gray").pack(side="left")
         ttk.Button(bar, text="Borrar datos guardados", command=self._clear).pack(side="right")
+        ttk.Button(bar, text="Exportar para Claude", command=self._export).pack(side="right", padx=8)
 
         # Tabla
         table = ttk.Frame(self.root, padding=(10, 4))
         table.pack(fill="both", expand=True)
-        cols = [("name", "Objeto", 270, "w"), ("tier", "Tier", 50, "center"), ("quality", "Calidad", 185, "w"),
-                ("city", "Comprar en", 110, "w"), ("buy_price", "Precio compra", 105, "e"),
-                ("bm_price", "Paga MN", 95, "e"), ("revenue", "Recibes", 95, "e"), ("profit", "Beneficio", 95, "e"),
-                ("percent", "%", 70, "e"), ("age", "Datos", 70, "e"), ("source", "Origen", 100, "center")]
+        cols = [("name", "Objeto", 230, "w"), ("tier", "Tier", 45, "center"), ("quality", "Calidad", 170, "w"),
+                ("city", "Comprar en", 100, "w"), ("buy_price", "Precio compra", 95, "e"),
+                ("bm_price", "Paga MN", 90, "e"), ("profit", "Benef./ud.", 85, "e"), ("percent", "%", 65, "e"),
+                ("units", "Uds.", 55, "e"), ("invest", "Inversión máx.", 105, "e"),
+                ("total_profit", "Benef. total", 95, "e"), ("age", "Datos", 60, "e"), ("source", "Origen", 85, "center")]
         self.tree = ttk.Treeview(table, columns=[c[0] for c in cols], show="headings", selectmode="browse")
         for key, title, width, anchor in cols:
             self.tree.heading(key, text=title, command=lambda k=key: self._sort(k))
@@ -232,9 +240,9 @@ class App:
         self.capture_lbl.configure(foreground="#1d7a3a" if ok else "#b3261e")
 
     # Llamados desde el hilo de captura -> se pasan a la cola de la interfaz
-    def _on_live_prices(self, server: str, location: Optional[str], prices: dict) -> None:
+    def _on_live_prices(self, server: str, location: Optional[str], prices: dict, books: dict) -> None:
         srv = server or self.effective_server()
-        n = self.store.upsert(srv, prices, source="juego")
+        n = self.store.upsert(srv, prices, source="juego", books=books)
         locs = sorted({k[2] for k in prices})
         self.events.put(("prices", f"{len(prices)} precios leídos en {', '.join(locs)} ({n} actualizados)"))
 
@@ -338,7 +346,8 @@ class App:
             return max(o.buy_age_h, o.bm_age_h)
         if k == "source":
             return (o.buy_source, o.bm_source)
-        return getattr(o, k)
+        v = getattr(o, k)
+        return -1 if v is None else v
 
     def _sort(self, key: str) -> None:
         if self.sort_key == key:
@@ -365,7 +374,7 @@ class App:
                 tags.append("neg")
             self.tree.insert("", "end", iid=f"{o.item_id}|{o.quality}|{o.city}", tags=tags, values=(
                 c.name(o.item_id), c.label(o.item_id), q, o.city, fmt(o.buy_price), fmt(o.bm_price),
-                fmt(o.revenue), fmt(o.profit), f"{o.percent:.1f} %", ago(max(o.buy_age_h, o.bm_age_h)), src))
+                fmt(o.profit), f"{o.percent:.1f} %", fmtn(o.units), fmtn(o.invest), fmtn(o.total_profit), ago(max(o.buy_age_h, o.bm_age_h)), src))
         arrow = " ▼" if self.sort_desc else " ▲"
         for col in self.tree["columns"]:
             title = self.tree.heading(col, "text").rstrip(" ▲▼")
@@ -427,6 +436,35 @@ class App:
         self._log(msg)
 
     # ------------------------------------------------------------------ varios
+    def _export(self) -> None:
+        """Genera el informe para pegárselo a Claude: lo copia al portapapeles y lo guarda en Documentos."""
+        self._refresh_table()
+        f = self._read_filters()
+        srv = self.effective_server()
+        capital = self._num(f["capital"], 0) or None
+        filters_text = (f"categorías {', '.join(f['cats']) or 'ninguna'}; tiers {', '.join(map(str, f['tiers']))}; "
+                        f"encantamientos {', '.join(map(str, f['enchs']))}; calidades "
+                        f"{', '.join(QUALITY_NAMES[q] for q in f['quals'])}; ciudades {', '.join(f['cities'])}; "
+                        f"beneficio mín. {f['min_pct'] or '—'} % y {f['min_silver'] or '—'} de plata; "
+                        f"presupuesto máx. por objeto {f['max_cost'] or 'sin límite'}"
+                        + ("; solo la mejor ciudad por objeto" if f["best_only"] else ""))
+        text = build_report(self.opps, self.catalog, server=srv, premium=f["premium"], buy_mode=f["buy_mode"],
+                            max_age_h=self._num(f["max_age"], 24), capital=capital, location=self.location,
+                            live_count=self.store.count_live(srv), filters_text=filters_text)
+        try:
+            path = save_report(text)
+        except OSError as e:
+            path = None
+            self._log(f"No se pudo guardar el informe: {e}")
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self._log(f"Informe exportado ({len(self.opps)} oportunidades)" + (f": {path}" if path else "."))
+        messagebox.showinfo("Exportar para Claude", (
+            "El informe está copiado en el portapapeles"
+            + (f" y guardado en:\n{path}" if path else "") +
+            "\n\nPégalo (Ctrl+V) o adjunta el archivo en tu conversación con Claude y pregunta, por ejemplo:\n"
+            "«Tengo 25 millones, ¿en qué me vale más la pena invertir?»"))
+
     def _clear(self) -> None:
         if messagebox.askyesno("Albion BM", "¿Borrar todos los precios guardados?"):
             self.store.clear()
@@ -450,6 +488,8 @@ class App:
             "4. Las filas en verde usan datos leídos de tu juego. Para lo que no hayas visto, pulsa "
             "«Completar con la API».\n\n"
             "Doble clic en una fila copia el nombre del objeto para pegarlo en el buscador del mercado.\n\n"
+            "«Exportar para Claude» genera un informe (copiado al portapapeles y guardado en Documentos\\AlbionBM) "
+            "para pegárselo a Claude y preguntarle en qué invertir. Rellena «Capital» para incluir un reparto.\n\n"
             "Requisito: Npcap (https://npcap.com). La app solo escucha el tráfico; no modifica el juego."))
 
     def _on_close(self) -> None:

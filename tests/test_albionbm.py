@@ -11,7 +11,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 import photon_builder as pb  # noqa: E402
 from albionbm import calc, photon  # noqa: E402
 from albionbm.api import chunk_ids, rows_to_prices  # noqa: E402
-from albionbm.game import BLACK_MARKET, GameListener, parse_orders, resolve_location  # noqa: E402
+from albionbm.game import BLACK_MARKET, GameListener, order_books, parse_orders, resolve_location
+from albionbm.export import build_report  # noqa: E402
 from albionbm.items import Catalog, load_items  # noqa: E402
 from albionbm.store import PriceStore  # noqa: E402
 
@@ -24,8 +25,8 @@ def order(item, price, kind="request", q=1, ench=0, loc=None, amount=1):
 
 class Collector:
     def __init__(self):
-        self.prices, self.status = [], []
-        self.listener = GameListener(lambda s, l, p: self.prices.append((s, l, p)),
+        self.prices, self.status, self.books = [], [], []
+        self.listener = GameListener(lambda s, l, p, b: (self.prices.append((s, l, p)), self.books.append(b)),
                                      lambda k, v: self.status.append((k, v)))
 
 
@@ -109,6 +110,53 @@ class PhotonTests(unittest.TestCase):
         self.assertIsNone(c.listener.location)
 
 
+class DepthTests(unittest.TestCase):
+    def test_order_books_aggregate(self):
+        orders = parse_orders([order("T4_BAG", 100, "offer", amount=2), order("T4_BAG", 90, "offer", amount=1),
+                               order("T4_BAG", 100, "offer", amount=3), order("T4_BAG", 500, "request", amount=4),
+                               order("T4_BAG", 600, "request", amount=1)], "Lymhurst")
+        books = order_books(orders)
+        self.assertEqual(books[("T4_BAG", 1, "Lymhurst", "offer")], [[90, 1], [100, 5]])
+        self.assertEqual(books[("T4_BAG", 1, "Lymhurst", "request")], [[600, 1], [500, 4]])
+
+    def test_walk_books_stops_when_unprofitable(self):
+        # MN paga 1000 (x2) y 500 (x10); ciudad vende a 400 (x1), 600 (x5), 900 (x10). Impuesto 4 %.
+        units, invest, profit = calc.walk_books([[400, 1], [600, 5], [900, 10]], [[1000, 2], [500, 10]], 0.04)
+        # 1 ud 400->960, 1 ud 600->960; luego 600 vs 480 ya no compensa
+        self.assertEqual((units, invest, profit), (2, 1000, 920))
+        self.assertEqual(calc.walk_books(None, [[1, 1]], 0.04), (None, None, None))
+
+    def test_compute_with_depth_and_plan(self):
+        now = time.time()
+        entries = {
+            ("A", 1, "Lymhurst", "offer"): (1000, now, "juego", [[1000, 10], [1500, 10]]),
+            ("A", 1, BLACK_MARKET, "request"): (2000, now, "juego", [[2000, 15]]),
+            ("B", 1, "Martlock", "offer"): (1000, now, "juego", [[1000, 100]]),
+            ("B", 1, BLACK_MARKET, "request"): (1300, now, "juego", [[1300, 100]]),
+            ("C", 1, "Thetford", "offer"): (100, now, "api", None),
+            ("C", 1, BLACK_MARKET, "request"): (1000, now, "api", None),
+        }
+        opps = {o.item_id: o for o in calc.compute(entries, ["Lymhurst", "Martlock", "Thetford"], [1], now=now)}
+        self.assertEqual((opps["A"].units, opps["A"].invest), (15, 17500))
+        self.assertIsNone(opps["C"].units)
+        lines, left = calc.plan(list(opps.values()), 50000)
+        self.assertEqual([l.opp.item_id for l in lines], ["A", "B"])  # C sin cantidades no entra
+        self.assertLessEqual(lines[0].invest, 50000 * 0.35)
+        self.assertEqual(left, 50000 - sum(l.invest for l in lines))
+
+    def test_report(self):
+        now = time.time()
+        entries = {("T4_BAG", 1, "Lymhurst", "offer"): (1000, now, "juego", [[1000, 5]]),
+                   ("T4_BAG", 1, BLACK_MARKET, "request"): (2000, now, "juego", [[2000, 5]])}
+        opps = calc.compute(entries, ["Lymhurst"], [1], now=now)
+        text = build_report(opps, Catalog(load_items()), server="europe", premium=True, buy_mode="instant",
+                            max_age_h=6, capital=25_000_000, location="Lymhurst", live_count=2, filters_text="x")
+        self.assertIn("25.000.000", text)
+        self.assertIn("`T4_BAG`", text)
+        self.assertIn("Reparto automático", text)
+        self.assertIn("| 5 | 5.000 |", text)  # unidades e inversión máx.
+
+
 class LocationTests(unittest.TestCase):
     def test_ids(self):
         self.assertEqual(resolve_location("3003"), BLACK_MARKET)
@@ -172,6 +220,8 @@ class StoreAndApiTests(unittest.TestCase):
             s.upsert("europe", {k: 100}, ts=now, source="juego")
             s.upsert("europe", {k: 999}, source="api", timestamps={k: now - 3600})  # más antiguo: se ignora
             self.assertEqual(s.load("europe", 24)[k][:1], (100,))
+            s.upsert("europe", {k: 110}, ts=now + 1, books={k: [[110, 3]]})
+            self.assertEqual(s.load("europe", 24)[k][3], [[110, 3]])
             s.upsert("europe", {k: 120}, ts=now + 5)
             self.assertEqual(s.load("europe", 24)[k][0], 120)
             self.assertEqual(s.load("west", 24), {})
