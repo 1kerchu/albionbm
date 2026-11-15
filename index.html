@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Albion Mercado Negro</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header>
+    <h1>Albion · Mercado Negro</h1>
+    <p class="sub">Compara el precio de compra en las ciudades con lo que paga el Mercado Negro de Caerleon y ordena por beneficio.</p>
+  </header>
+
+  <main>
+    <section class="panel" id="filters">
+      <div class="grid">
+        <label>Servidor
+          <select id="server">
+            <option value="europe">Europa</option>
+            <option value="west">América (West)</option>
+            <option value="east">Asia (East)</option>
+          </select>
+        </label>
+        <label>Buscar objeto
+          <input id="search" type="search" placeholder="p. ej. espada, bolsa, T6_BAG…">
+        </label>
+        <label>Modo de compra
+          <select id="buyMode">
+            <option value="instant">Compra directa (precio de venta más bajo)</option>
+            <option value="order">Orden de compra (+ tasa de publicación)</option>
+          </select>
+        </label>
+        <label class="check"><input id="premium" type="checkbox" checked> Tengo prémium (impuesto 4 % en vez de 8 %)</label>
+      </div>
+
+      <div class="grid">
+        <fieldset><legend>Categorías</legend><div id="cats" class="chips"></div></fieldset>
+        <fieldset><legend>Tier</legend><div id="tiers" class="chips"></div></fieldset>
+        <fieldset><legend>Encantamiento</legend><div id="enchs" class="chips"></div></fieldset>
+        <fieldset><legend>Calidad</legend><div id="quals" class="chips"></div></fieldset>
+        <fieldset><legend>Ciudades donde comprar</legend><div id="cities" class="chips"></div></fieldset>
+      </div>
+
+      <div class="grid">
+        <label>Beneficio mínimo (%)<input id="minPct" type="number" value="10" step="1"></label>
+        <label>Beneficio mínimo (plata)<input id="minSilver" type="number" value="5000" step="1000"></label>
+        <label>Presupuesto máx. por objeto<input id="maxCost" type="number" value="" placeholder="sin límite" step="10000"></label>
+        <label>Antigüedad máx. de datos (h)<input id="maxAge" type="number" value="6" min="1" step="1"></label>
+        <label class="check"><input id="bestOnly" type="checkbox" checked> Solo la mejor ciudad por objeto</label>
+      </div>
+
+      <div class="actions">
+        <span id="count" class="muted"></span>
+        <button id="run" class="primary">Buscar oportunidades</button>
+        <button id="stop" hidden>Detener</button>
+      </div>
+      <div id="progress" class="progress" hidden><div></div></div>
+      <p id="status" class="muted"></p>
+    </section>
+
+    <section class="panel">
+      <div class="table-wrap">
+        <table id="results">
+          <thead>
+            <tr>
+              <th data-sort="name">Objeto</th>
+              <th data-sort="quality">Calidad</th>
+              <th data-sort="city">Comprar en</th>
+              <th data-sort="buyPrice" class="num">Precio compra</th>
+              <th data-sort="bmPrice" class="num">Paga MN</th>
+              <th data-sort="revenue" class="num">Recibes</th>
+              <th data-sort="profit" class="num">Beneficio</th>
+              <th data-sort="percent" class="num">%</th>
+              <th data-sort="age" class="num">Datos</th>
+            </tr>
+          </thead>
+          <tbody><tr><td colspan="9" class="empty">Elige filtros y pulsa «Buscar oportunidades».</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer class="muted">
+      Precios de <a href="https://www.albion-online-data.com/" target="_blank" rel="noopener">Albion Online Data Project</a>
+      (datos aportados por jugadores, pueden estar desactualizados: compruébalos en el juego antes de comprar).
+      Recuerda que llevar objetos a Caerleon implica cruzar zona roja.
+    </footer>
+  </main>
+
+  <script src="data/items.js"></script>
+  <script src="js/calc.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "name": "albionbm",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Comparador de precios ciudades vs Mercado Negro de Albion Online",
+  "scripts": {
+    "test": "node --test tests/calc.test.js",
+    "start": "python3 -m http.server 8080"
+  }
+}
