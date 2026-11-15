@@ -25,6 +25,16 @@ def ago(h: float) -> str:
     return f"{round(h / 24)} d"
 
 
+def _units(o: Opportunity) -> str:
+    return ("~" if o.estimated else "") + fmt(o.units)
+
+
+def _vol(o: Opportunity) -> str:
+    if o.daily_volume is None:
+        return "—"
+    return f"{o.daily_volume:.1f}".replace(".", ",") if o.daily_volume < 10 else fmt(o.daily_volume)
+
+
 def _src(o: Opportunity) -> str:
     a, b = o.buy_source, o.bm_source
     return "juego" if a == b == "juego" else ("API" if a == b == "api" else f"{a}/{b}".replace("api", "API"))
@@ -66,7 +76,9 @@ def build_report(opps: List[Opportunity], catalog, *, server: str, premium: bool
     w("")
     w("- **Cantidades:** «Uds.» es cuántas unidades se pueden comprar con beneficio según las órdenes que vi "
       "en el juego, «Inversión máx.» lo que cuesta comprarlas todas y «Benef. total» lo que se ganaría. "
-      "Si aparece «—», solo se conoce el mejor precio (datos de la API) y no la cantidad disponible.")
+      "Si «Uds.» lleva «~», es una **estimación**: lo que el Mercado Negro compra en un día de media "
+      "(«Vol. MN/día», últimos 7 días, de la API) valorado al mejor precio; la cantidad real en las órdenes "
+      "es desconocida y el precio empeora al comprar más. «—» = sin datos de cantidad.")
     w("- **Frescura:** «Datos» es la antigüedad del precio más viejo de los dos. Los precios cambian rápido, "
       "sobre todo en el Mercado Negro. Desconfía de lo que tenga varias horas o salga de la API.")
     w("- **Órdenes compartidas:** las órdenes del Mercado Negro aceptan la calidad pedida o superior, así que "
@@ -101,7 +113,8 @@ def build_report(opps: List[Opportunity], catalog, *, server: str, premium: bool
         w("## Reparto automático propuesto por la app")
         w("")
         if lines:
-            w("Primero lo más rentable (beneficio total / inversión), máximo 35 % del capital por objeto, solo con cantidades conocidas. "
+            w("Primero lo más rentable (beneficio total / inversión), máximo 35 % del capital por objeto, "
+              "con cantidades leídas del juego o estimadas («~») por el volumen diario del MN. "
               "Úsalo como punto de partida.")
             w("")
             w("| Objeto | ID | Calidad | Comprar en | Uds. | Inversión | Benef. estimado |")
@@ -109,30 +122,31 @@ def build_report(opps: List[Opportunity], catalog, *, server: str, premium: bool
             for p in lines:
                 o = p.opp
                 w(f"| {catalog.name(o.item_id)} ({catalog.label(o.item_id)}) | `{o.item_id}` | "
-                  f"{QUALITY_NAMES[o.quality]} | {o.city} | {fmt(p.units)} | {fmt(p.invest)} | {fmt(p.profit)} |")
+                  f"{QUALITY_NAMES[o.quality]} | {o.city} | {"~" if o.estimated else ""}{fmt(p.units)} | {fmt(p.invest)} | {fmt(p.profit)} |")
             inv = sum(p.invest for p in lines)
             prof = sum(p.profit for p in lines)
             w(f"| **Total** | | | | | **{fmt(inv)}** | **{fmt(prof)}** ({prof / inv * 100:.1f} %) |")
             w("")
             w(f"Capital sin invertir: {fmt(left)}.")
         else:
-            w("No hay oportunidades con cantidades conocidas. Lee el mercado en el juego para obtenerlas.")
+            w("No hay oportunidades con cantidades conocidas. Pulsa «Actualizar precios» (incluye el volumen "
+              "diario del MN) o lee el mercado en el juego.")
         w("")
 
     w("## Oportunidades")
     w("")
     w("| # | Objeto | ID | Calidad | Comprar en | Precio compra | Paga MN | Benef./ud. | % | Uds. | "
-      "Inversión máx. | Benef. total | Peso | Datos | Origen |")
-    w("|--:|---|---|---|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|---|")
+      "Inversión máx. | Benef. total | Vol. MN/día | Peso | Datos | Origen |")
+    w("|--:|---|---|---|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|---|")
     for i, o in enumerate(rows, 1):
         q = QUALITY_NAMES[o.quality] + (f" (orden {QUALITY_NAMES[o.bm_quality]})" if o.bm_quality != o.quality else "")
         weight = catalog.base(o.item_id).get("w")
         w(f"| {i} | {catalog.name(o.item_id)} ({catalog.label(o.item_id)}) | `{o.item_id}` | {q} | {o.city} | "
-          f"{fmt(o.buy_price)} | {fmt(o.bm_price)} | {fmt(o.profit)} | {o.percent:.1f} % | {fmt(o.units)} | "
-          f"{fmt(o.invest)} | {fmt(o.total_profit)} | {weight if weight is not None else '—'} | "
+          f"{fmt(o.buy_price)} | {fmt(o.bm_price)} | {fmt(o.profit)} | {o.percent:.1f} % | {_units(o)} | "
+          f"{fmt(o.invest)} | {fmt(o.total_profit)} | {_vol(o)} | {weight if weight is not None else '—'} | "
           f"{ago(max(o.buy_age_h, o.bm_age_h))} | {_src(o)} |")
     if not rows:
-        w("| | Sin oportunidades con estos filtros | | | | | | | | | | | | | |")
+        w("| | Sin oportunidades con estos filtros | | | | | | | | | | | | | | |")
     w("")
     return "\n".join(L)
 

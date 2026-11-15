@@ -36,14 +36,29 @@ lista de órdenes y la app la lee.
    (armas, armaduras…). La app guarda lo que paga el Mercado Negro.
 3. En cada ciudad, abre el mercado (pestaña **Comprar**) y navega. La app guarda los precios de venta.
 4. La tabla se actualiza sola. Las filas en **verde** usan precios leídos de tu juego.
-5. Para lo que no hayas visto, pulsa **Completar con la API**.
+5. Para lo que no hayas visto, pulsa **⟳ Actualizar precios** (ver abajo).
 6. Haz **doble clic** en una fila para copiar el nombre del objeto y pegarlo en el buscador del mercado.
 
 Los precios se guardan en `%APPDATA%\AlbionBM\precios.sqlite3`, así que no se pierden al cerrar.
 
+## Todos los precios con un botón
+
+**⟳ Actualizar precios** descarga de la API de Albion Online Data Project los precios de **todas las
+ciudades marcadas y del Mercado Negro** para todo lo que marquen los filtros (categorías, tiers,
+encantamientos y calidades). También descarga cuántas unidades compra el Mercado Negro al día
+(media de los últimos 7 días). Con los filtros por defecto (unos 1.500 objetos) tarda alrededor de un minuto.
+
+- Marca **Auto cada N min** para que se actualice sola (mínimo 5 minutos, para respetar la API).
+- La API la alimentan los jugadores, así que algunos precios pueden tener horas. Revisa la columna «Datos».
+- La API no dice cuántas unidades hay en cada orden. Por eso, cuando no hay datos leídos del juego, las
+  unidades se **estiman** con el volumen diario del Mercado Negro y se marcan con «~».
+- Lo que leas en el juego tiene prioridad si es más reciente, y trae cantidades reales.
+- La app **no** recorre los mercados del juego por ti: automatizar el juego es botting y lleva a baneo.
+  Además, el juego solo enseña el mercado de la ciudad donde estás.
+
 ## Preguntarle a Claude en qué invertir
 
-1. Lee los mercados en el juego (cuantos más, mejor) y, si quieres, pulsa **Completar con la API**.
+1. Pulsa **⟳ Actualizar precios** y, si quieres más precisión, lee mercados en el juego.
 2. Escribe tu dinero en **Capital** (por ejemplo `25000000`) y ajusta los filtros.
 3. Pulsa **Exportar para Claude**. El informe se copia al portapapeles y se guarda en
    `Documentos\AlbionBM\informe_albionbm_FECHA.md`.

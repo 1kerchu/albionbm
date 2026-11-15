@@ -10,7 +10,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import photon_builder as pb  # noqa: E402
 from albionbm import calc, photon  # noqa: E402
-from albionbm.api import chunk_ids, rows_to_prices  # noqa: E402
+from albionbm import api
+from albionbm.api import chunk_ids, history_to_volumes, rows_to_prices  # noqa: E402
 from albionbm.game import BLACK_MARKET, GameListener, order_books, parse_orders, resolve_location
 from albionbm.export import build_report  # noqa: E402
 from albionbm.items import Catalog, load_items  # noqa: E402
@@ -155,6 +156,51 @@ class DepthTests(unittest.TestCase):
         self.assertIn("`T4_BAG`", text)
         self.assertIn("Reparto automático", text)
         self.assertIn("| 5 | 5.000 |", text)  # unidades e inversión máx.
+
+
+class VolumeTests(unittest.TestCase):
+    def test_history_to_volumes(self):
+        now = 1_800_000_000.0
+        day = lambda d: time.strftime("%Y-%m-%dT00:00:00", time.gmtime(now - d * 86400))
+        rows = [{"location": "Black Market", "item_id": "T4_BAG", "quality": 1,
+                 "data": [{"item_count": 14, "timestamp": day(1)}, {"item_count": 7, "timestamp": day(3)},
+                          {"item_count": 1000, "timestamp": day(30)}]}]  # fuera de la ventana de 7 días
+        self.assertEqual(history_to_volumes(rows, now=now), {("T4_BAG", 1): 3.0})
+
+    def test_estimated_units_from_volume(self):
+        now = time.time()
+        entries = {("A", 2, "Martlock", "offer"): (1000, now, "api", None),
+                   ("A", 1, BLACK_MARKET, "request"): (2000, now, "api", None)}
+        [o] = calc.compute(entries, ["Martlock"], [2], now=now, volumes={("A", 1): 3.0, ("A", 2): 2.5})
+        self.assertTrue(o.estimated)
+        self.assertEqual(o.daily_volume, 5.5)
+        self.assertEqual((o.units, o.invest, o.total_profit), (5, 5000, 5 * 920))
+        lines, _ = calc.plan([o], 1_000_000)
+        self.assertEqual(lines[0].units, 5)
+
+    def test_store_volumes(self):
+        with tempfile.TemporaryDirectory() as d:
+            s = PriceStore(os.path.join(d, "p.db"))
+            s.upsert_volumes("europe", {("A", 1): 4.5})
+            self.assertEqual(s.load_volumes("europe"), {("A", 1): 4.5})
+            self.assertEqual(s.load_volumes("west"), {})
+            s.close()
+
+    def test_fetch_uses_chunks_and_query(self):
+        calls = []
+        orig, orig_pause = api._get_json, api.PAUSE
+        api._get_json, api.PAUSE = (lambda url: calls.append(url) or [{"item_id": "x"}]), 0
+        try:
+            rows = api.fetch_prices("europe", ["T4_BAG@1"] * 300, ["Lymhurst", BLACK_MARKET], [1, 2])
+            hist = api.fetch_bm_history("west", ["T4_BAG"], [1])
+        finally:
+            api._get_json, api.PAUSE = orig, orig_pause
+        self.assertEqual(len(rows), len(calls) - 1)
+        self.assertGreater(len(calls), 2)
+        self.assertTrue(calls[0].startswith("https://europe.albion-online-data.com/api/v2/stats/prices/T4_BAG%401,"))
+        self.assertIn("locations=Lymhurst%2CBlack+Market", calls[0])
+        self.assertIn("/stats/history/T4_BAG.json?locations=Black+Market&qualities=1&time-scale=24", calls[-1])
+        self.assertEqual(hist, [{"item_id": "x"}])
 
 
 class LocationTests(unittest.TestCase):

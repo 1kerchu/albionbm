@@ -33,6 +33,8 @@ class Opportunity:
     units: Optional[int] = None         # unidades que se pueden comprar y vender con beneficio
     invest: Optional[int] = None        # plata necesaria para comprarlas todas
     total_profit: Optional[int] = None  # beneficio total vendiéndolas al MN
+    daily_volume: Optional[float] = None  # unidades que vende el MN al día (historial de la API)
+    estimated: bool = False             # True si units/invest/total salen del volumen diario y no del juego
 
 
 def walk_books(buy_book: Optional[list], bm_book: Optional[list], tax: float):
@@ -63,13 +65,16 @@ def walk_books(buy_book: Optional[list], bm_book: Optional[list], tax: float):
 
 def compute(entries: Dict[Tuple[str, int, str, str], tuple],
             cities: Iterable[str], qualities: Iterable[int], premium: bool = True,
-            buy_mode: str = "instant", now: Optional[float] = None) -> List[Opportunity]:
+            buy_mode: str = "instant", now: Optional[float] = None,
+            volumes: Optional[Dict[Tuple[str, int], float]] = None) -> List[Opportunity]:
     """
     entries: {(item, calidad, ubicación, "offer"|"request"): (precio, timestamp, origen[, profundidad])}
 
     - Se vende a las órdenes de compra del Mercado Negro.
     - Una orden de calidad Q acepta objetos de calidad >= Q: se usa la mejor orden con calidad <= la del objeto.
     - Vender a una orden paga impuesto de venta; comprar con orden de compra paga la tasa de publicación.
+    - volumes: {(item, calidad): unidades vendidas al día en el MN}. Si no hay cantidades leídas del juego,
+      se estiman las unidades como lo que el MN absorbe en un día (marcado como estimado).
     """
     now = now or time.time()
     tax = TAX_PREMIUM if premium else TAX_NO_PREMIUM
@@ -119,10 +124,19 @@ def compute(entries: Dict[Tuple[str, int, str, str], tuple],
                     if levels and len(c) > 3:
                         levels.sort(key=lambda x: -x[0])
                         units, invest, total = walk_books(c[3], levels, tax)
+                vol = None
+                if volumes:
+                    # el MN compra calidad >= Q a las órdenes de calidad Q: suma el volumen de las calidades <= q
+                    vs = [volumes[(item, qq)] for qq in range(1, q + 1) if (item, qq) in volumes]
+                    vol = sum(vs) if vs else None
+                estimated = False
+                if units is None and vol and profit > 0:
+                    units = max(1, int(vol))
+                    invest, total, estimated = round(units * cost), round(units * profit), True
                 result.append(Opportunity(
                     item, q, city, bq, round(cost), bprice, round(revenue), round(profit),
                     profit / cost * 100, max(0.0, (now - c[1]) / 3600), max(0.0, (now - bts) / 3600), c[2], bsrc,
-                    units, invest, total))
+                    units, invest, total, vol, estimated))
     return result
 
 
@@ -146,7 +160,8 @@ class PlanLine:
 def plan(opps: List[Opportunity], capital: float, max_share: float = 0.35) -> Tuple[List[PlanLine], int]:
     """Reparto simple del capital: primero lo más rentable (beneficio total / inversión, contando todas
     las unidades disponibles y no solo la primera), sin poner más de `max_share`
-    del capital en un mismo objeto y usando solo oportunidades con cantidades conocidas.
+    del capital en un mismo objeto y usando solo oportunidades con cantidades conocidas o estimadas
+    por el volumen diario del MN.
     Devuelve (líneas, capital sin invertir)."""
     left = capital
     lines: List[PlanLine] = []

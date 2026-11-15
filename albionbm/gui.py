@@ -11,7 +11,7 @@ from tkinter import messagebox, ttk
 from typing import Dict, List, Optional
 
 from . import __version__
-from .api import fetch_prices, rows_to_prices
+from .api import fetch_bm_history, fetch_prices, history_to_volumes, rows_to_prices
 from .calc import QUALITY_NAMES, Opportunity, best_per_item, compute
 from .export import build_report, save_report
 from .capture import Capture, CaptureError
@@ -25,7 +25,7 @@ MAX_ROWS = 1000
 
 DEFAULTS = {
     "server": "Automático", "premium": True, "buy_mode": "instant", "best_only": True,
-    "min_pct": "10", "min_silver": "5000", "max_cost": "", "max_age": "6", "search": "", "capital": "",
+    "min_pct": "10", "min_silver": "5000", "max_cost": "", "max_age": "6", "search": "", "capital": "", "auto": False, "auto_min": "15",
     "cats": ["weapons", "armors", "head", "shoes", "offhands", "bags", "capes"],
     "tiers": [4, 5, 6], "enchs": [0, 1], "quals": [1, 2, 3], "cities": list(CITIES),
 }
@@ -61,6 +61,7 @@ class App:
         self.location: Optional[str] = None
         self.api_thread: Optional[threading.Thread] = None
         self.api_stop = False
+        self.last_api_update = 0.0
         self.rendered_version = -1
         self.opps: List[Opportunity] = []
         self.sort_key, self.sort_desc = "percent", True
@@ -185,11 +186,17 @@ class App:
         # Barra de acciones
         bar = ttk.Frame(self.root, padding=(10, 4))
         bar.pack(fill="x")
-        self.api_btn = ttk.Button(bar, text="Completar con la API", command=self._api_refresh)
+        self.api_btn = ttk.Button(bar, text="⟳ Actualizar precios", command=self._api_refresh)
         self.api_btn.pack(side="left")
         self.api_stop_btn = ttk.Button(bar, text="Detener", command=self._api_cancel, state="disabled")
         self.api_stop_btn.pack(side="left", padx=4)
-        self.progress = ttk.Progressbar(bar, length=160, mode="determinate")
+        self.auto_var = tk.BooleanVar(value=s["auto"])
+        ttk.Checkbutton(bar, text="Auto cada", variable=self.auto_var, command=self._filters_changed).pack(
+            side="left", padx=(8, 2))
+        self.auto_min_var = tk.StringVar(value=s["auto_min"])
+        ttk.Entry(bar, textvariable=self.auto_min_var, width=4).pack(side="left")
+        ttk.Label(bar, text="min").pack(side="left", padx=(2, 0))
+        self.progress = ttk.Progressbar(bar, length=140, mode="determinate")
         self.progress.pack(side="left", padx=8)
         self.count_var = tk.StringVar()
         ttk.Label(bar, textvariable=self.count_var, foreground="gray").pack(side="left")
@@ -232,7 +239,7 @@ class App:
             self._log("Escuchando el tráfico del juego (puerto 5056).")
         except CaptureError as e:
             self._set_capture(False, "Captura: no disponible")
-            self.warn_var.set(str(e) + "  Mientras tanto puedes usar «Completar con la API».")
+            self.warn_var.set(str(e) + "  Mientras tanto puedes usar «Actualizar precios».")
             self._log(str(e))
 
     def _set_capture(self, ok: bool, text: str) -> None:
@@ -273,6 +280,8 @@ class App:
                         self._set_capture(False, "Captura: detenida")
                         self.warn_var.set(value)
                     self._log(value)
+                elif kind == "log":
+                    self._log(value)
                 elif kind == "api_progress":
                     self.progress["value"] = value
                 elif kind == "api_done":
@@ -286,6 +295,11 @@ class App:
             self.rendered_version = self.store.version
             self.live_var.set(f"Precios leídos del juego (24 h): {fmt(self.store.count_live(srv))}")
             self._refresh_table()
+        # Actualización automática
+        if self.auto_var.get() and not (self.api_thread and self.api_thread.is_alive()):
+            every = max(5.0, self._num(self.auto_min_var.get(), 15)) * 60
+            if time.time() - self.last_api_update >= every:
+                self._api_refresh(auto=True)
         self.root.after(700, self._tick)
 
     def effective_server(self) -> str:
@@ -299,7 +313,7 @@ class App:
             "buy_mode": self.buy_mode_var.get(), "search": self.search_var.get().strip(),
             **{k: v.get().strip() for k, v in self.entries.items()},
             "cats": sel("cats"), "tiers": sel("tiers"), "enchs": sel("enchs"), "quals": sel("quals"),
-            "cities": sel("cities"),
+            "cities": sel("cities"), "auto": self.auto_var.get(), "auto_min": self.auto_min_var.get().strip(),
         }
 
     def _filters_changed(self) -> None:
@@ -325,7 +339,8 @@ class App:
         c = self.catalog
         entries = {k: v for k, v in entries.items()
                    if c.matches(k[0], f["cats"], f["tiers"], f["enchs"], f["search"])}
-        opps = compute(entries, f["cities"], f["quals"], f["premium"], f["buy_mode"])
+        opps = compute(entries, f["cities"], f["quals"], f["premium"], f["buy_mode"],
+                       volumes=self.store.load_volumes(self.effective_server()))
         min_pct, min_silver = self._num(f["min_pct"], -1e18), self._num(f["min_silver"], -1e18)
         max_cost = self._num(f["max_cost"], 1e18)
         opps = [o for o in opps if o.percent >= min_pct and o.profit >= min_silver and o.buy_price <= max_cost]
@@ -374,7 +389,7 @@ class App:
                 tags.append("neg")
             self.tree.insert("", "end", iid=f"{o.item_id}|{o.quality}|{o.city}", tags=tags, values=(
                 c.name(o.item_id), c.label(o.item_id), q, o.city, fmt(o.buy_price), fmt(o.bm_price),
-                fmt(o.profit), f"{o.percent:.1f} %", fmtn(o.units), fmtn(o.invest), fmtn(o.total_profit), ago(max(o.buy_age_h, o.bm_age_h)), src))
+                fmt(o.profit), f"{o.percent:.1f} %", ("~" if o.estimated else "") + fmtn(o.units), fmtn(o.invest), fmtn(o.total_profit), ago(max(o.buy_age_h, o.bm_age_h)), src))
         arrow = " ▼" if self.sort_desc else " ▲"
         for col in self.tree["columns"]:
             title = self.tree.heading(col, "text").rstrip(" ▲▼")
@@ -391,16 +406,20 @@ class App:
         self.status_var.set(f"Copiado al portapapeles: {name}  ({item_id})")
 
     # ------------------------------------------------------------------ API
-    def _api_refresh(self) -> None:
+    def _api_refresh(self, auto: bool = False) -> None:
+        """Descarga de la API los precios de todas las ciudades y del MN (y el volumen diario del MN)
+        para todo lo que marquen los filtros, sin tener que ir mercado a mercado."""
         if self.api_thread and self.api_thread.is_alive():
             return
         f = self._read_filters()
-        ids = self.catalog.variant_ids(f["cats"], f["tiers"], f["enchs"], f["search"])
+        ids = self.catalog.variant_ids(f["cats"], f["tiers"], f["enchs"])  # sin el buscador: todo el filtro
+        self.last_api_update = time.time()
         if not ids or not f["cities"] or not f["quals"]:
-            messagebox.showinfo("Albion BM", "No hay objetos, ciudades o calidades seleccionadas.")
+            if not auto:
+                messagebox.showinfo("Albion BM", "No hay objetos, ciudades o calidades seleccionadas.")
             return
-        if len(ids) > 4000 and not messagebox.askyesno(
-                "Albion BM", f"Vas a consultar {fmt(len(ids))} objetos; tardará un rato. ¿Continuar?"):
+        if not auto and len(ids) > 4000 and not messagebox.askyesno(
+                "Albion BM", f"Vas a consultar {fmt(len(ids))} objetos; tardará unos minutos. ¿Continuar?"):
             return
         qualities = list(range(1, max(f["quals"]) + 1))
         locations = f["cities"] + [BLACK_MARKET]
@@ -409,17 +428,29 @@ class App:
         self.api_btn.configure(state="disabled")
         self.api_stop_btn.configure(state="normal")
         self.progress["value"] = 0
-        self._log(f"Consultando la API ({SERVER_LABEL[server]}) para {fmt(len(ids))} objetos…")
+        self._log(("Actualización automática: " if auto else "") +
+                  f"descargando precios de {fmt(len(ids))} objetos en {len(locations)} mercados "
+                  f"({SERVER_LABEL[server]})…")
 
         def work():
             try:
                 rows = fetch_prices(server, ids, locations, qualities,
-                                    progress=lambda n, t: self.events.put(("api_progress", n / t * 100)),
+                                    progress=lambda n, t: self.events.put(("api_progress", n / t * 60)),
                                     should_stop=lambda: self.api_stop)
                 prices, stamps = rows_to_prices(rows)
                 n = self.store.upsert(server, prices, source="api", timestamps=stamps)
-                self.events.put(("api_done", f"API: {fmt(len(prices))} precios recibidos, {fmt(n)} actualizados "
-                                             "(los leídos en el juego más recientes se conservan)."))
+                self.events.put(("log", f"Precios: {fmt(len(prices))} recibidos, {fmt(n)} actualizados "
+                                        "(los leídos en el juego más recientes se conservan)."))
+                # Volumen diario del MN solo para lo que el MN está comprando
+                bm_ids = sorted({k[0] for k in prices if k[2] == BLACK_MARKET and k[3] == "request"})
+                if bm_ids and not self.api_stop:
+                    hist = fetch_bm_history(server, bm_ids, qualities,
+                                            progress=lambda n, t: self.events.put(("api_progress", 60 + n / t * 40)),
+                                            should_stop=lambda: self.api_stop)
+                    vols = history_to_volumes(hist)
+                    self.store.upsert_volumes(server, vols)
+                    self.events.put(("log", f"Volumen diario del Mercado Negro: {fmt(len(vols))} objetos."))
+                self.events.put(("api_done", "Actualización terminada." if not self.api_stop else "Actualización detenida."))
             except Exception as e:
                 self.events.put(("api_done", f"Error consultando la API: {e}"))
 
@@ -430,6 +461,7 @@ class App:
         self.api_stop = True
 
     def _api_finished(self, msg: str) -> None:
+        self.last_api_update = time.time()
         self.api_btn.configure(state="normal")
         self.api_stop_btn.configure(state="disabled")
         self.progress["value"] = 0
@@ -486,7 +518,7 @@ class App:
             "la app guarda lo que paga.\n"
             "3. Ve a otras ciudades, abre el mercado (pestaña Comprar) y navega: la app guarda los precios.\n"
             "4. Las filas en verde usan datos leídos de tu juego. Para lo que no hayas visto, pulsa "
-            "«Completar con la API».\n\n"
+            "«Actualizar precios».\n\n"
             "Doble clic en una fila copia el nombre del objeto para pegarlo en el buscador del mercado.\n\n"
             "«Exportar para Claude» genera un informe (copiado al portapapeles y guardado en Documentos\\AlbionBM) "
             "para pegárselo a Claude y preguntarle en qué invertir. Rellena «Capital» para incluir un reparto.\n\n"
