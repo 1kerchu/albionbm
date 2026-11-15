@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Genera data/items.js con los objetos que compra el Mercado Negro.
+"""Genera data/items.json con los objetos que compra el Mercado Negro.
 
 Uso:
   python3 scripts/build_items.py RUTA/items.json RUTA/formatted_items.json
@@ -37,11 +37,7 @@ for kind in KINDS:
         out.append({"id": uid, "es": es, "en": en, "c": cat, "s": sub, "t": tier, "e": levels})
 
 out.sort(key=lambda x: (x["c"], x["s"], x["id"]))
-dst = os.path.join(os.path.dirname(__file__), "..", "data", "items.js")
+dst = os.path.join(os.path.dirname(__file__), "..", "data", "items.json")
 with open(dst, "w", encoding="utf-8") as f:
-    # Se guarda como .js para que index.html funcione abierto con doble clic (sin servidor).
-    f.write("// Generado por scripts/build_items.py - no editar a mano\n")
-    f.write("window.ALBION_ITEMS = ")
     json.dump(out, f, ensure_ascii=False, separators=(",", ":"))
-    f.write(";\n")
 print(len(out), "objetos base,", sum(len(x["e"]) for x in out), "variantes ->", dst)
