@@ -1,9 +1,8 @@
 name: Publicar versión web (GitHub Pages)
 
+# Alternativa manual. Por defecto la web se sirve directamente desde la rama
+# (Settings → Pages → Deploy from a branch): index.html redirige a web/.
 on:
-  push:
-    branches: ["**"]
-    paths: ["web/**", "data/items.json", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
 permissions:

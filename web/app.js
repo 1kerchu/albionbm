@@ -335,7 +335,10 @@
       copy(buildReport(readForm()), "Informe copiado. Pégalo en tu chat con Claude.");
     });
     try {
-      items = await (await fetch("items.json")).json();
+      // Publicada con el workflow, items.json está junto a la página; servida desde el repositorio, en ../data/
+      let res = await fetch("items.json");
+      if (!res.ok) res = await fetch("../data/items.json");
+      items = await res.json();
       byId = new Map(items.map((i) => [i.id, i]));
     } catch (e) {
       setStatus("No se pudo cargar la lista de objetos. Recarga la página.");
