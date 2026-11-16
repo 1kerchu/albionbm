@@ -17,6 +17,7 @@
     <button data-tab="opps" class="active">Oportunidades</button>
     <button data-tab="plan">Plan</button>
     <button data-tab="calc">Calcular</button>
+    <button data-tab="more">Más</button>
     <button data-tab="settings">Ajustes</button>
   </nav>
 
@@ -64,6 +65,7 @@
           <option value="refine">Refinado</option>
           <option value="trade">Venta manual</option>
           <option value="upgrade">Encantar y mejorar</option>
+          <option value="rank">Ranking: qué fabricar o refinar</option>
         </select>
       </label>
 
@@ -126,7 +128,78 @@
         </div>
         <div id="uOut" class="result"></div>
       </div>
+      <div id="calc-rank" class="calc" hidden>
+        <div class="grid2">
+          <label>Qué<select id="rType"><option value="equip">Fabricar equipo</option><option value="consumables">Fabricar consumibles</option><option value="refine">Refinar recursos</option></select></label>
+          <label>Ordenar por<select id="rSort"><option value="percent">Mayor %</option><option value="unitProfit">Mayor beneficio/ud.</option><option value="profitPerFocus">Mayor beneficio por foco</option></select></label>
+          <label>Comprar materiales en<select id="rBuy"></select></label>
+          <label>Vender en<select id="rSell"></select></label>
+        </div>
+        <label>Forma de venta
+          <select id="rSellMode"><option value="order">Poner orden de venta (impuesto + 2,5 %)</option><option value="instant">Venta rápida a orden de compra</option></select>
+        </label>
+        <label class="check"><input id="rCity" type="checkbox"> Ciudad con bonus</label>
+        <label class="check"><input id="rFocus" type="checkbox"> Usar foco</label>
+        <label>Tasa del taller (por 100 nutrición)<input id="rFee" type="text" inputmode="numeric" value="500"></label>
+        <p class="muted small">Usa los tiers y encantamientos marcados en Ajustes. Precios de calidad Normal. El bonus de ciudad se aplica a todo por igual: en realidad cada ciudad solo lo da a ciertos objetos.</p>
+        <button id="rRun" class="wide primary">Calcular ranking</button>
+        <p id="rStatus" class="muted small"></p>
+        <div id="rList" class="cards"></div>
+      </div>
       <p class="muted small">El prémium y el servidor se cogen de Ajustes. Los precios de la API son de calidad Normal salvo que elijas otra; puedes corregir cualquier precio a mano.</p>
+    </section>
+
+    <!-- Más: favoritos, historial y ganancias -->
+    <section id="tab-more" class="tab" hidden>
+      <label>Sección
+        <select id="moreKind">
+          <option value="favs">Favoritos y avisos de precio</option>
+          <option value="hist">Historial de precios</option>
+          <option value="ledger">Registro de ganancias</option>
+        </select>
+      </label>
+
+      <div id="more-favs">
+        <label>Añadir objeto<input id="fSearch" type="search" placeholder="Escribe para buscar…"></label>
+        <div id="fResults" class="results"></div>
+        <button id="fCheck" class="wide primary">Comprobar precios ahora</button>
+        <label class="check"><input id="fAuto" type="checkbox"> Comprobar sola cada 10 min (con esta página abierta)</label>
+        <p id="fStatus" class="muted small"></p>
+        <div id="fList" class="cards"></div>
+      </div>
+
+      <div id="more-hist" hidden>
+        <label>Objeto<input id="hSearch" type="search" placeholder="Escribe para buscar…"></label>
+        <div id="hResults" class="results"></div>
+        <p id="hItem" class="picked" hidden></p>
+        <div class="grid2">
+          <label id="hEnchWrap">Encantamiento<select id="hEnch"><option>0</option><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
+          <label>Calidad<select id="hQual"></select></label>
+        </div>
+        <button id="hRun" class="wide" disabled>Ver historial</button>
+        <p id="hStatus" class="muted small"></p>
+        <div id="hChart"></div>
+        <div id="hTable"></div>
+      </div>
+
+      <div id="more-ledger" hidden>
+        <div id="lTotals" class="tiles"></div>
+        <fieldset><legend>Apuntar una operación</legend>
+          <label>Objeto<input id="lName" type="text" placeholder="p. ej. Bolsa del experto"></label>
+          <div class="grid2">
+            <label>Cantidad<input id="lQty" type="text" inputmode="numeric" value="1"></label>
+            <span></span>
+            <label>Precio de compra/ud.<input id="lBuy" type="text" inputmode="numeric"></label>
+            <label>Precio de venta/ud.<input id="lSell" type="text" inputmode="numeric"></label>
+          </div>
+          <label class="check"><input id="lBuyOrder" type="checkbox"> Compré con orden de compra (+2,5 %)</label>
+          <label class="check"><input id="lSellOrder" type="checkbox"> Vendí con orden de venta (+2,5 %)</label>
+          <p id="lPreview" class="muted small"></p>
+          <button id="lAdd" class="wide primary">Añadir al registro</button>
+        </fieldset>
+        <button id="lCsv" class="wide">Copiar todo como CSV</button>
+        <div id="lList" class="cards"></div>
+      </div>
     </section>
 
     <!-- Ajustes -->
@@ -171,5 +244,6 @@
   <script src="calculators.js"></script>
   <script src="app.js"></script>
   <script src="calcui.js"></script>
+  <script src="moreui.js"></script>
 </body>
 </html>

@@ -119,6 +119,18 @@ Retorno de recursos: `1 − 1 / (1 + bonus)`, con bonus 18 % base, +15 % en la c
 fabricación (+40 % en refinado) y +59 % con foco. Tasa del taller: valor del objeto × 0,1125 × tasa por
 100 de nutrición / 100. Las recetas salen de `data/recipes.json` (`scripts/build_recipes.py`).
 
+## Versión web (móvil)
+
+En `web/`, publicada con GitHub Pages. Usa solo la API (no lee el juego) y guarda tus datos en el
+propio navegador. Además de oportunidades, plan y calculadoras, tiene:
+
+- **Ranking de fabricación:** repasa todas las recetas con los precios de la API y ordena qué da más
+  beneficio al fabricar o refinar.
+- **Favoritos y avisos de precio:** objetos seguidos con un precio objetivo; avisa mientras la página
+  esté abierta.
+- **Historial de precios:** gráfica del precio medio diario por ciudad en los últimos 28 días.
+- **Registro de ganancias:** apuntas tus operaciones y lleva la cuenta de lo ganado.
+
 ## Cómo calcula el beneficio
 
 | Concepto | Fórmula |

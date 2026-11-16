@@ -133,6 +133,7 @@
                src="https://render.albiononline.com/v1/item/${encodeURIComponent(o.itemId)}.png?quality=${o.quality}&size=96">
           <div><div class="name">${esc(itemName(o.itemId))}</div><div class="sub">${itemLabel(o.itemId)} · ${esc(q)}</div></div>
           <div class="pct ${o.profit > 0 ? "good" : "bad"}">${o.percent.toFixed(1)} %<div class="sub">+${fmt(o.profit)}/ud.</div></div>
+          <button class="star" data-fav="${esc(o.itemId)}" data-q="${o.quality}" aria-label="Añadir a favoritos">☆</button>
         </div>
         <div class="route">${esc(o.city)} → <strong>${esc(CITY_LABEL(o.sellCity))}</strong></div>
         <dl>
@@ -315,7 +316,7 @@
   function showTab(name) {
     document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
     document.querySelectorAll(".tab").forEach((s) => { s.hidden = s.id !== "tab-" + name; });
-    $("updateBar").hidden = name === "calc";
+    $("updateBar").hidden = name === "calc" || name === "more";
     document.dispatchEvent(new CustomEvent("albion-tab", { detail: name }));
   }
 
@@ -326,12 +327,18 @@
     $("stop").addEventListener("click", () => { stopFlag = true; });
     let t;
     const changed = () => { clearTimeout(t); t = setTimeout(() => { saveSettings(); refresh(); }, 200); };
-    const inCalc = (e) => e.target.closest("#tab-calc");  // las calculadoras se gestionan en calcui.js
+    const inCalc = (e) => e.target.closest("#tab-calc, #tab-more");  // las calculadoras se gestionan en calcui.js
     document.querySelector("main").addEventListener("change", (e) => { if (!inCalc(e)) changed(); });
     document.querySelector("main").addEventListener("input", (e) => {
       if (!inCalc(e) && e.target.matches('input[type="text"], input[type="search"]')) changed();
     });
     $("list").addEventListener("click", (e) => {
+      const star = e.target.closest(".star");
+      if (star) {
+        document.dispatchEvent(new CustomEvent("albion-fav", { detail: { id: star.dataset.fav, quality: Number(star.dataset.q) } }));
+        star.textContent = "★"; star.classList.add("on");
+        return;
+      }
       const card = e.target.closest(".card");
       if (card) copy(itemName(card.dataset.id), "Nombre copiado: " + itemName(card.dataset.id));
     });
@@ -352,6 +359,6 @@
   }
   // Lo que usan las calculadoras (web/calcui.js)
   window.AlbionApp = { entries, getJson, itemName, itemLabel, getItems: () => items, readForm, fmt, esc, norm, num, toast,
-    CITY_LABEL };
+    CITY_LABEL, variantIds, copy, ago, base, showTab };
   start();
 })();

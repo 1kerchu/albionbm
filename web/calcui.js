@@ -27,7 +27,7 @@
   function setupSearch(inputId, resultsId, filter, onPick) {
     $(inputId).addEventListener("input", () => {
       const q = norm($(inputId).value.trim());
-      if (q.length < 2 || !data) { $(resultsId).innerHTML = ""; return; }
+      if (q.length < 2) { $(resultsId).innerHTML = ""; return; }
       const found = A.getItems().filter((it) => filter(it) && (norm(it.es).includes(q) || norm(it.en).includes(q) || norm(it.id).includes(q))).slice(0, 8);
       $(resultsId).innerHTML = found.length
         ? found.map((it) => `<button data-id="${esc(it.id)}">${esc(it.es)} <small>${A.itemLabel(it.id)}</small></button>`).join("")
@@ -46,7 +46,13 @@
     const f = A.readForm();
     $(statusId).textContent = "Buscando precios…";
     try {
-      for (const chunk of C.chunkIds(ids)) {
+      const chunks = C.chunkIds(ids);
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        if (chunks.length > 1) {
+          $(statusId).textContent = `Buscando precios… ${i + 1}/${chunks.length}`;
+          if (i) await new Promise((r) => setTimeout(r, 500));  // respeta el límite de la API
+        }
         const url = `https://${f.server}.albion-online-data.com/api/v2/stats/prices/${chunk.map(encodeURIComponent).join(",")}.json` +
           `?locations=${encodeURIComponent(locs.join(","))}&qualities=${quals.join(",")}`;
         C.mergePrices(A.entries, await A.getJson(url) || []);
@@ -202,12 +208,58 @@
        <dt>Comprarlo ya mejorado</dt><dd>${u.direct ? fmt(u.direct) : "—"}</dd></dl>`;
   }
 
+  // ------------------------------------------------------------ ranking de fabricación
+  let rankIds = null;
+  const RANK_CATS = { equip: [...EQUIP], consumables: ["consumables"], refine: ["resources"] };
+
+  async function runRank() {
+    const f = A.readForm();
+    const ids = A.variantIds(f, RANK_CATS[$("rType").value]).filter((id) => data.recipes[id]);
+    if (!ids.length) { $("rStatus").textContent = "No hay recetas con los tiers y encantamientos marcados en Ajustes."; return; }
+    const mats = new Set();
+    for (const id of ids) for (const m of data.recipes[id].m) mats.add(m[0]);
+    $("rRun").disabled = true;
+    const ok = await fetchPrices(ids, [$("rSell").value], [1], "rStatus") &&
+               await fetchPrices([...mats], [$("rBuy").value], [1], "rStatus");
+    $("rRun").disabled = false;
+    if (ok) { rankIds = ids; renderRank(); }
+  }
+
+  function renderRank() {
+    if (!rankIds) return;
+    const f = A.readForm(), buy = $("rBuy").value, sell = $("rSell").value;
+    const instant = $("rSellMode").value === "instant" || sell === C.BLACK_MARKET;
+    const refine = $("rType").value === "refine", focus = $("rFocus").checked;
+    const opts = { rrr: K.returnRate(refine ? "refine" : "craft", $("rCity").checked, focus), fee100: num($("rFee").value, 0),
+      premium: f.premium, sellOrder: !instant };
+    const rows = [];
+    for (const id of rankIds) {
+      const r = data.recipes[id], prices = {};
+      for (const [m] of r.m) prices[m] = price(m, buy, "offer");
+      const sp = price(id, sell, instant ? "request" : "offer");
+      if (!sp) continue;
+      const c = K.craft(r, data.values, prices, sp, opts);
+      if (!c.missing.length) rows.push({ id, c, sp });
+    }
+    const key = $("rSort").value;
+    rows.sort((a, b) => (b.c[key] ?? -Infinity) - (a.c[key] ?? -Infinity));
+    $("rStatus").textContent = `${fmt(rows.length)} de ${fmt(rankIds.length)} recetas tienen todos los precios. ` +
+      "Comprueba en el juego que el objeto se vende antes de fabricar mucho.";
+    $("rList").innerHTML = rows.length ? rows.slice(0, 60).map(({ id, c, sp }) => `<article class="card">
+      <div class="top"><div><div class="name">${esc(A.itemName(id))}</div><div class="sub">${A.itemLabel(id)}${c.unitsPerCraft > 1 ? ` · ${c.unitsPerCraft} uds. por fabricación` : ""}</div></div>
+        <div class="pct ${cls(c.unitProfit)}">${pct(c.percent)}<div class="sub">${c.unitProfit > 0 ? "+" : ""}${fmt(c.unitProfit)}/ud.</div></div></div>
+      <dl><div><dt>Coste/ud.</dt><dd>${fmt(c.unitCost)}</dd></div><div><dt>Venta</dt><dd>${fmt(sp)}</dd></div>
+        <div><dt>${focus ? "Benef./foco" : "Foco"}</dt><dd>${focus && c.profitPerFocus != null ? c.profitPerFocus.toFixed(1).replace(".", ",") : fmt(c.focus)}</dd></div></dl>
+      </article>`).join("") : '<div class="empty">Ninguna receta tiene todos los precios en esas ciudades.</div>';
+  }
+
   // ------------------------------------------------------------ arranque
   function showKind() {
     kind = $("calcKind").value;
     $("calc-craft").hidden = !(kind === "craft" || kind === "refine");
     $("calc-trade").hidden = kind !== "trade";
     $("calc-upgrade").hidden = kind !== "upgrade";
+    $("calc-rank").hidden = kind !== "rank";
     if (kind === "craft" || kind === "refine") {
       $("cSearchLabel").textContent = kind === "refine" ? "Recurso a refinar" : "Objeto a fabricar";
       craftItem = null; matPrices = {};
@@ -224,8 +276,9 @@
     ready = true;
     const opt = (v, l) => `<option value="${esc(v)}">${esc(l)}</option>`;
     const cities = C.CITIES.map((c) => opt(c, c)).join("");
-    $("cBuy").innerHTML = cities; $("uCity").innerHTML = cities;
-    $("cSell").innerHTML = cities + opt(C.BLACK_MARKET, "Mercado Negro");
+    $("cBuy").innerHTML = cities; $("uCity").innerHTML = cities; $("rBuy").innerHTML = cities;
+    $("cSell").innerHTML = cities + opt(C.BLACK_MARKET, "Mercado Negro"); $("rSell").innerHTML = $("cSell").innerHTML;
+    $("rBuy").value = "Lymhurst"; $("rSell").value = "Lymhurst";
     $("uQual").innerHTML = Object.entries(C.QUALITY_NAMES).map(([q, n]) => opt(q, n)).join("");
     $("cBuy").value = "Lymhurst"; $("cSell").value = "Lymhurst"; $("uCity").value = "Lymhurst"; $("uTo").value = "1";
     try { await loadData(); } catch (e) { $("cStatus").textContent = "No se pudieron cargar las recetas. Recarga la página."; return; }
@@ -275,8 +328,15 @@
         [...new Set([1, Number($("uQual").value)])], "uStatus");
       fillUpFromStore(); renderUp();
     });
+    $("rRun").addEventListener("click", runRank);
+    $("calc-rank").addEventListener("change", (e) => {
+      if (["rType", "rBuy", "rSell"].includes(e.target.id)) { rankIds = null; $("rList").innerHTML = ""; $("rStatus").textContent = ""; }
+      else renderRank();
+    });
+    $("calc-rank").addEventListener("input", (e) => { if (e.target.id === "rFee") renderRank(); });
     showKind();
   }
 
+  window.AlbionCalcUI = { setupSearch, fetchPrices };  // lo reutiliza la pestaña «Más»
   document.addEventListener("albion-tab", (e) => { if (e.detail === "calc") init(); });
 })();
