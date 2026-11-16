@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1f1d17">
+  <title>Albion Comercio</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Albion · Comercio</h1>
+    <p id="summary" class="muted">Pulsa «Actualizar precios» para empezar.</p>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button data-tab="opps" class="active">Oportunidades</button>
+    <button data-tab="plan">Plan</button>
+    <button data-tab="settings">Ajustes</button>
+  </nav>
+
+  <main>
+    <div class="actions">
+      <button id="refresh" class="primary">⟳ Actualizar precios</button>
+      <button id="stop" hidden>Detener</button>
+    </div>
+    <div id="progress" class="progress" hidden><div></div></div>
+    <p id="status" class="muted small"></p>
+
+    <!-- Oportunidades -->
+    <section id="tab-opps" class="tab">
+      <div class="row">
+        <input id="search" type="search" placeholder="Buscar objeto…">
+        <select id="sort" aria-label="Ordenar por">
+          <option value="percent">Mayor %</option>
+          <option value="profit">Mayor beneficio/ud.</option>
+          <option value="totalProfit">Mayor beneficio total</option>
+          <option value="age">Datos más recientes</option>
+        </select>
+      </div>
+      <div id="list" class="cards"></div>
+    </section>
+
+    <!-- Plan -->
+    <section id="tab-plan" class="tab" hidden>
+      <div class="grid2">
+        <label>Mi capital<input id="capital" type="text" inputmode="numeric" placeholder="25000000"></label>
+        <label>Carga máx. (kg)<input id="weight" type="text" inputmode="numeric" placeholder="opcional"></label>
+      </div>
+      <label>Perfil de riesgo<select id="profile"></select></label>
+      <p id="profileDesc" class="muted small"></p>
+      <button id="export" class="wide">Copiar informe para Claude</button>
+      <div id="routes" class="cards"></div>
+    </section>
+
+    <!-- Ajustes -->
+    <section id="tab-settings" class="tab" hidden>
+      <label>Servidor
+        <select id="server">
+          <option value="europe">Europa</option>
+          <option value="west">América (West)</option>
+          <option value="east">Asia (East)</option>
+        </select>
+      </label>
+      <label>Estrategia<select id="strategy"></select></label>
+      <fieldset><legend>Categorías</legend><div id="cats" class="chips"></div></fieldset>
+      <fieldset><legend>Tier</legend><div id="tiers" class="chips"></div></fieldset>
+      <fieldset><legend>Encantamiento</legend><div id="enchs" class="chips"></div></fieldset>
+      <fieldset><legend>Calidad</legend><div id="quals" class="chips"></div></fieldset>
+      <fieldset><legend>Ciudades</legend><div id="cities" class="chips"></div></fieldset>
+      <fieldset><legend>Opciones</legend>
+        <label class="check"><input id="premium" type="checkbox"> Tengo prémium (impuesto 4 %, si no 8 %)</label>
+        <label class="check"><input id="buyOrder" type="checkbox"> Comprar con orden de compra (+2,5 %)</label>
+        <label class="check"><input id="bestOnly" type="checkbox"> Solo la mejor ruta por objeto</label>
+        <label class="check"><input id="hideSusp" type="checkbox"> Ocultar precios sospechosos (⚠)</label>
+      </fieldset>
+      <div class="grid2">
+        <label>Beneficio mín. %<input id="minPct" type="text" inputmode="decimal"></label>
+        <label>Beneficio mín. plata<input id="minSilver" type="text" inputmode="numeric"></label>
+        <label>Precio máx. por unidad<input id="maxCost" type="text" inputmode="numeric" placeholder="sin límite"></label>
+        <label>Datos máx. (horas)<input id="maxAge" type="text" inputmode="decimal"></label>
+      </div>
+      <p id="count" class="muted small"></p>
+      <p class="muted small">
+        Precios de <a href="https://www.albion-online-data.com/" target="_blank" rel="noopener">Albion Online Data Project</a>,
+        aportados por jugadores: pueden estar desactualizados. Compruébalos en el juego antes de comprar.
+        Esta versión web no lee el juego; para eso está la app de Windows.
+      </p>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="calc.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
