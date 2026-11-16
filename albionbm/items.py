@@ -28,7 +28,7 @@ def load_items() -> List[dict]:
 
 
 def norm(s: str) -> str:
-    return "".join(c for c in unicodedata.normalize("NFD", s.lower()) if unicodedata.category(c) != "Mn")
+    return "".join(c for c in unicodedata.normalize("NFD", (s or "").lower()) if unicodedata.category(c) != "Mn")
 
 
 class Catalog:

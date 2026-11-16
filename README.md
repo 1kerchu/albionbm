@@ -103,6 +103,22 @@ comprar. Usa «Mi capital», «Carga máx. por viaje» y el perfil:
 Ningún perfil incluye precios sospechosos (⚠). Las cantidades con «~» son estimaciones a partir de
 las ventas diarias; compruébalas en el juego antes de comprar.
 
+## Calculadoras
+
+Botón **🖩 Calculadoras** en Windows y pestaña **Calcular** en la web. Todas pueden traer los precios de
+la API con un botón, y cualquier precio se puede corregir a mano.
+
+| Calculadora | Qué hace |
+|---|---|
+| Fabricación | Coste de fabricar un objeto con su receta real: materiales, retorno de recursos (ciudad con bonus y foco), tasa del taller, y beneficio al venderlo. Incluye beneficio por punto de foco |
+| Refinado | Lo mismo para refinar recursos, con los retornos del refinado |
+| Venta manual | Metes precio de compra y de venta: impuestos, tasas, beneficio y precio mínimo para no perder |
+| Encantar y mejorar | Coste de subir un objeto de .0 a .1/.2/.3 con runas, almas y reliquias, frente a comprarlo ya mejorado |
+
+Retorno de recursos: `1 − 1 / (1 + bonus)`, con bonus 18 % base, +15 % en la ciudad con bonus de
+fabricación (+40 % en refinado) y +59 % con foco. Tasa del taller: valor del objeto × 0,1125 × tasa por
+100 de nutrición / 100. Las recetas salen de `data/recipes.json` (`scripts/build_recipes.py`).
+
 ## Cómo calcula el beneficio
 
 | Concepto | Fórmula |
@@ -144,6 +160,7 @@ python scripts/build_items.py items_raw.json items_fmt.json
 
 ```bash
 python -m unittest discover -s tests -v
+node --test tests/web_calc.test.js tests/web_calculators.test.js
 ```
 
 ## Créditos

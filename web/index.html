@@ -16,16 +16,19 @@
   <nav class="tabs" role="tablist">
     <button data-tab="opps" class="active">Oportunidades</button>
     <button data-tab="plan">Plan</button>
+    <button data-tab="calc">Calcular</button>
     <button data-tab="settings">Ajustes</button>
   </nav>
 
   <main>
-    <div class="actions">
-      <button id="refresh" class="primary">⟳ Actualizar precios</button>
-      <button id="stop" hidden>Detener</button>
+    <div id="updateBar">
+      <div class="actions">
+        <button id="refresh" class="primary">⟳ Actualizar precios</button>
+        <button id="stop" hidden>Detener</button>
+      </div>
+      <div id="progress" class="progress" hidden><div></div></div>
+      <p id="status" class="muted small"></p>
     </div>
-    <div id="progress" class="progress" hidden><div></div></div>
-    <p id="status" class="muted small"></p>
 
     <!-- Oportunidades -->
     <section id="tab-opps" class="tab">
@@ -51,6 +54,79 @@
       <p id="profileDesc" class="muted small"></p>
       <button id="export" class="wide">Copiar informe para Claude</button>
       <div id="routes" class="cards"></div>
+    </section>
+
+    <!-- Calculadoras -->
+    <section id="tab-calc" class="tab" hidden>
+      <label>Calculadora
+        <select id="calcKind">
+          <option value="craft">Fabricación</option>
+          <option value="refine">Refinado</option>
+          <option value="trade">Venta manual</option>
+          <option value="upgrade">Encantar y mejorar</option>
+        </select>
+      </label>
+
+      <!-- Fabricación y refinado comparten formulario -->
+      <div id="calc-craft" class="calc">
+        <label><span id="cSearchLabel">Objeto a fabricar</span><input id="cSearch" type="search" placeholder="Escribe para buscar…"></label>
+        <div id="cResults" class="results"></div>
+        <p id="cItem" class="picked" hidden></p>
+        <div class="grid2">
+          <label id="cEnchWrap">Encantamiento<select id="cEnch"><option>0</option><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
+          <label>Nº de fabricaciones<input id="cQty" type="text" inputmode="numeric" value="1"></label>
+          <label>Comprar materiales en<select id="cBuy"></select></label>
+          <label>Vender en<select id="cSell"></select></label>
+        </div>
+        <label>Forma de venta
+          <select id="cSellMode"><option value="order">Poner orden de venta (impuesto + 2,5 %)</option><option value="instant">Venta rápida a orden de compra</option></select>
+        </label>
+        <fieldset><legend>Retorno de recursos</legend>
+          <label class="check"><input id="cCity" type="checkbox"> Ciudad con bonus para este objeto</label>
+          <label class="check"><input id="cFocus" type="checkbox"> Usar foco</label>
+          <div class="grid2">
+            <label>Retorno (%)<input id="cRrr" type="text" inputmode="decimal"></label>
+            <label>Tasa del taller (por 100 nutrición)<input id="cFee" type="text" inputmode="numeric" value="500"></label>
+          </div>
+        </fieldset>
+        <button id="cFetch" class="wide" disabled>Buscar precios en la API</button>
+        <p id="cStatus" class="muted small"></p>
+        <div id="cMats"></div>
+        <label>Precio de venta por unidad<input id="cSellPrice" type="text" inputmode="numeric"></label>
+        <div id="cOut" class="result"></div>
+      </div>
+
+      <div id="calc-trade" class="calc" hidden>
+        <div class="grid2">
+          <label>Precio de compra<input id="tBuy" type="text" inputmode="numeric"></label>
+          <label>Precio de venta<input id="tSell" type="text" inputmode="numeric"></label>
+          <label>Cantidad<input id="tQty" type="text" inputmode="numeric" value="1"></label>
+        </div>
+        <label class="check"><input id="tBuyOrder" type="checkbox"> Compro con orden de compra (+2,5 %)</label>
+        <label class="check"><input id="tSellOrder" type="checkbox"> Vendo con orden de venta (+2,5 %)</label>
+        <div id="tOut" class="result"></div>
+      </div>
+
+      <div id="calc-upgrade" class="calc" hidden>
+        <label>Objeto a mejorar<input id="uSearch" type="search" placeholder="Escribe para buscar…"></label>
+        <div id="uResults" class="results"></div>
+        <p id="uItem" class="picked" hidden></p>
+        <div class="grid2">
+          <label>Desde<select id="uFrom"><option value="0">.0</option><option value="1">.1</option><option value="2">.2</option></select></label>
+          <label>Hasta<select id="uTo"><option value="1">.1</option><option value="2">.2</option><option value="3">.3</option></select></label>
+          <label>Calidad<select id="uQual"></select></label>
+          <label>Ciudad<select id="uCity"></select></label>
+        </div>
+        <button id="uFetch" class="wide" disabled>Buscar precios en la API</button>
+        <p id="uStatus" class="muted small"></p>
+        <div id="uMats"></div>
+        <div class="grid2">
+          <label>Precio del objeto sin mejorar<input id="uBase" type="text" inputmode="numeric"></label>
+          <label>Precio comprándolo ya mejorado<input id="uTarget" type="text" inputmode="numeric"></label>
+        </div>
+        <div id="uOut" class="result"></div>
+      </div>
+      <p class="muted small">El prémium y el servidor se cogen de Ajustes. Los precios de la API son de calidad Normal salvo que elijas otra; puedes corregir cualquier precio a mano.</p>
     </section>
 
     <!-- Ajustes -->
@@ -92,6 +168,8 @@
   <div id="toast" class="toast" hidden></div>
 
   <script src="calc.js"></script>
+  <script src="calculators.js"></script>
   <script src="app.js"></script>
+  <script src="calcui.js"></script>
 </body>
 </html>

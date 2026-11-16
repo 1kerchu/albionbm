@@ -4,7 +4,7 @@
   const $ = (id) => document.getElementById(id);
   const fmt = (n) => (n == null ? "—" : Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, "."));
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-  const norm = (s) => s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  const norm = (s) => (s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
   const num = (s, d) => { const v = parseFloat(String(s || "").replace(/\./g, "").replace(",", ".")); return Number.isFinite(v) ? v : d; };
   const ago = (h) => (h < 1 ? `${Math.max(1, Math.round(h * 60))} min` : h < 48 ? `${Math.round(h)} h` : `${Math.round(h / 24)} d`);
 
@@ -315,6 +315,8 @@
   function showTab(name) {
     document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
     document.querySelectorAll(".tab").forEach((s) => { s.hidden = s.id !== "tab-" + name; });
+    $("updateBar").hidden = name === "calc";
+    document.dispatchEvent(new CustomEvent("albion-tab", { detail: name }));
   }
 
   async function start() {
@@ -324,8 +326,11 @@
     $("stop").addEventListener("click", () => { stopFlag = true; });
     let t;
     const changed = () => { clearTimeout(t); t = setTimeout(() => { saveSettings(); refresh(); }, 200); };
-    document.querySelector("main").addEventListener("change", changed);
-    document.querySelector("main").addEventListener("input", (e) => { if (e.target.matches('input[type="text"], input[type="search"]')) changed(); });
+    const inCalc = (e) => e.target.closest("#tab-calc");  // las calculadoras se gestionan en calcui.js
+    document.querySelector("main").addEventListener("change", (e) => { if (!inCalc(e)) changed(); });
+    document.querySelector("main").addEventListener("input", (e) => {
+      if (!inCalc(e) && e.target.matches('input[type="text"], input[type="search"]')) changed();
+    });
     $("list").addEventListener("click", (e) => {
       const card = e.target.closest(".card");
       if (card) copy(itemName(card.dataset.id), "Nombre copiado: " + itemName(card.dataset.id));
@@ -345,5 +350,8 @@
     }
     refresh();
   }
+  // Lo que usan las calculadoras (web/calcui.js)
+  window.AlbionApp = { entries, getJson, itemName, itemLabel, getItems: () => items, readForm, fmt, esc, norm, num, toast,
+    CITY_LABEL };
   start();
 })();

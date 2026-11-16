@@ -33,7 +33,9 @@ for kind in KINDS:
         if isinstance(ench, dict):
             ench = [ench]
         levels = [0] + sorted(int(e["@enchantmentlevel"]) for e in ench if int(e["@enchantmentlevel"]) <= 4)
-        es, en = names.get(uid, (uid, uid))
+        es, en = names.get(uid, (None, None))
+        if not es or not en:  # objetos internos o prototipos sin nombre: no están en el mercado
+            continue
         out.append({"id": uid, "es": es, "en": en, "c": cat, "s": sub, "t": tier, "e": levels,
                     "w": float(it.get("@weight", 0) or 0)})
 

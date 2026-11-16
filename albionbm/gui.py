@@ -71,6 +71,7 @@ class App:
         self.sort_key, self.sort_desc = "percent", True
         self.alert_seen: Optional[set] = None
         self.plan_win: Optional[tk.Toplevel] = None
+        self.calc_win = None
         self.settings = self._load_settings()
 
         root.title(f"Albion · Comercio y Mercado Negro  v{__version__}")
@@ -212,6 +213,7 @@ class App:
         pcb.bind("<<ComboboxSelected>>", lambda e: self._filters_changed())
         ttk.Button(row3, text="★ Plan de inversión", command=self._show_plan).pack(side="left", padx=(12, 4))
         ttk.Button(row3, text="Exportar para Claude", command=self._export).pack(side="left")
+        ttk.Button(row3, text="🖩 Calculadoras", command=self._show_calculators).pack(side="left", padx=4)
 
         # Barra de acciones
         bar = ttk.Frame(self.root, padding=(10, 4))
@@ -315,6 +317,8 @@ class App:
                     self._log(value)
                 elif kind == "log":
                     self._log(value)
+                elif kind == "call":
+                    value()
                 elif kind == "api_progress":
                     self.progress["value"] = value
                 elif kind == "api_done":
@@ -544,6 +548,16 @@ class App:
                           f"+{fmt(top.profit)} por unidad ({top.percent:.0f} %).")
                 self.status_var.set(f"🔔 {len(new)} oportunidades nuevas con tus filtros.")
         self.alert_seen = set(keys)
+
+    def _show_calculators(self) -> None:
+        from .calc_gui import CalculatorsWindow
+        if self.calc_win is not None and self.calc_win.exists():
+            self.calc_win.win.lift()
+            return
+        try:
+            self.calc_win = CalculatorsWindow(self)
+        except (OSError, ValueError) as e:
+            messagebox.showerror("Albion BM", f"No se pudieron cargar las recetas: {e}")
 
     # ------------------------------------------------------------------ plan de inversión
     def _show_plan(self) -> None:
