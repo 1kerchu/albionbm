@@ -197,6 +197,13 @@ class VolumeTests(unittest.TestCase):
                           {"item_count": 30, "avg_price": 200, "timestamp": day(2)}]}]
         self.assertEqual(api.history_to_stats(rows, now=now), {("X", 2, "Martlock"): (40 / 7, 175.0)})
 
+    def test_ssl_context_verifies_with_certifi(self):
+        import ssl
+        ctx = api.ssl_context()
+        self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(ctx.check_hostname)
+        self.assertGreater(len(ctx.get_ca_certs()), 50)  # lista de autoridades cargada
+
     def test_fetch_uses_chunks_and_query(self):
         calls = []
         orig, orig_pause = api._get_json, api.PAUSE

@@ -20,7 +20,7 @@ jobs:
       - name: Compilar AlbionBM.exe
         run: >
           pyinstaller --noconfirm --onefile --windowed --name AlbionBM
-          --add-data "data;data" --collect-submodules scapy.layers --collect-submodules scapy.arch
+          --add-data "data;data" --collect-submodules scapy.layers --collect-submodules scapy.arch --collect-data certifi
           AlbionBM.pyw
       - uses: actions/upload-artifact@v4
         with:

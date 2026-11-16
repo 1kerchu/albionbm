@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import ssl
 import time
 import urllib.parse
 import urllib.request
@@ -13,7 +14,7 @@ from .game import BLACK_MARKET
 
 HOSTS = {"europe": "europe.albion-online-data.com", "west": "west.albion-online-data.com",
          "east": "east.albion-online-data.com"}
-USER_AGENT = "AlbionBM/1.3 (comparador de mercado negro)"
+USER_AGENT = "AlbionBM/1.5 (comparador de mercado negro)"
 PAUSE = 0.6
 
 
@@ -58,12 +59,32 @@ def rows_to_prices(rows: List[dict]) -> Tuple[Dict[tuple, int], Dict[tuple, floa
     return prices, stamps
 
 
+_ssl_context: Optional[ssl.SSLContext] = None
+
+
+def ssl_context() -> ssl.SSLContext:
+    """Contexto TLS con la lista de certificados de certifi (va dentro de la app).
+
+    En Windows, Python usa por defecto el almacén de certificados del sistema, y si contiene algún
+    certificado intermedio caducado falla con «certificate has expired» aunque el servidor esté bien.
+    La verificación sigue activa: solo cambia de dónde salen las autoridades de confianza.
+    """
+    global _ssl_context
+    if _ssl_context is None:
+        try:
+            import certifi
+            _ssl_context = ssl.create_default_context(cafile=certifi.where())
+        except Exception:  # sin certifi (o lista ilegible): certificados del sistema
+            _ssl_context = ssl.create_default_context()
+    return _ssl_context
+
+
 def _get_json(url: str):
     """GET con reintentos (límite de peticiones y errores de red). Pide gzip para ir más rápido."""
     for attempt in range(5):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept-Encoding": "gzip"})
-            with urllib.request.urlopen(req, timeout=45) as resp:
+            with urllib.request.urlopen(req, timeout=45, context=ssl_context()) as resp:
                 data = resp.read()
                 if resp.headers.get("Content-Encoding") == "gzip":
                     data = gzip.decompress(data)
@@ -73,7 +94,11 @@ def _get_json(url: str):
                 time.sleep(5 * (attempt + 1))
                 continue
             raise
-        except (urllib.error.URLError, TimeoutError, ConnectionError):
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            if isinstance(getattr(e, "reason", None), ssl.SSLCertVerificationError):
+                # Reintentar no lo arregla: casi siempre es la fecha del PC mal puesta
+                raise RuntimeError("No se pudo verificar el certificado de seguridad de la API. Comprueba que la "
+                                   "fecha y la hora de Windows son correctas y vuelve a intentarlo.") from e
             if attempt == 4:
                 raise
             time.sleep(3)
