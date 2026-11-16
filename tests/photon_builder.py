@@ -19,12 +19,20 @@ def string(s: str) -> bytes:
     return cuint(len(b)) + b
 
 
+class IntList(list):
+    """Lista de enteros que se codifica como array tipado de enteros largos comprimidos."""
+
+
 def value(v) -> bytes:
     """Devuelve type code + valor."""
+    if isinstance(v, IntList):
+        return bytes([0x40 | 10]) + cuint(len(v)) + b"".join(cuint((x << 1) ^ (x >> 63)) for x in v)
     if isinstance(v, bool):
         return bytes([28 if v else 27])
     if isinstance(v, int):
         z = (v << 1) ^ (v >> 63)
+        if abs(v) >= 2 ** 31:
+            return bytes([10]) + cuint(z)
         return bytes([9]) + cuint(z & 0xFFFFFFFF)
     if isinstance(v, str):
         return bytes([7]) + string(v)

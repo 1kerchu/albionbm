@@ -139,6 +139,25 @@ Botón **☆ Favoritos · Historial · Ganancias** en Windows y pestaña **Más*
 La pestaña **Ranking** de las Calculadoras repasa todas las recetas y ordena qué da más beneficio al
 fabricar o refinar. En Windows, favoritos y ganancias se guardan en `%APPDATA%\AlbionBM\`.
 
+## Historial automático de compras y ventas (solo Windows)
+
+En **☆ Favoritos · Historial · Ganancias → Historial automático**. Con la app abierta y la captura
+activa, apunta sola lo que compras y vendes en el mercado y calcula el beneficio:
+
+| Operación | Cuándo se apunta |
+|---|---|
+| Compra directa | al comprar (cuando el servidor la confirma) |
+| Venta rápida a una orden de compra, incluido el Mercado Negro | al vender |
+| Venta o compra por orden | cuando **abres** su correo en el juego (el juego no envía el contenido antes) |
+
+- La plata se muestra neta: las ventas descuentan el impuesto (4 % con prémium, 8 % sin) y las órdenes
+  el 2,5 % de publicación.
+- El beneficio de cada venta usa el coste medio de lo que la app te vio comprar de ese objeto. Si no
+  vio la compra, sale «—» y no cuenta en el total.
+- Solo reconoce compras y ventas de órdenes que la app haya visto en la lista del mercado, que es lo
+  normal al comprar desde el propio mercado.
+- No lee nada con la app cerrada, ni si el juego cifra los datos.
+
 ## Versión web (móvil)
 
 En `web/`, publicada con GitHub Pages. Usa solo la API (no lee el juego) y guarda tus datos en el
@@ -170,7 +189,8 @@ antigüedad del precio más viejo de los dos.
 | Archivo | Qué hace |
 |---|---|
 | `albionbm/photon.py` | Decodificador del protocolo de red Photon (Protocol18) del juego |
-| `albionbm/game.py` | Ubicación del jugador, servidor y órdenes de mercado a partir de los mensajes |
+| `albionbm/game.py` | Ubicación, servidor, órdenes de mercado, correos y tus compras y ventas a partir de los mensajes |
+| `albionbm/movements.py` | Historial automático: plata neta y beneficio por coste medio |
 | `albionbm/capture.py` | Captura pasiva con Scapy + Npcap |
 | `albionbm/store.py` | Base de datos local de precios (SQLite) |
 | `albionbm/api.py` | Cliente de la API de Albion Online Data Project |

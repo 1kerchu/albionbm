@@ -282,6 +282,96 @@ class StrategyTests(unittest.TestCase):
         self.assertEqual(routes[0].lines[0].units, 20)  # 50 % de 40.000 a 1.000 por unidad
 
 
+class MovementTests(unittest.TestCase):
+    def collector(self):
+        c = Collector()
+        self.moves = []
+        c.listener.on_movement = self.moves.append
+        c.listener.feed(pb.packet(pb.reliable(3, pb.response(2, {8: "1002", 2: "Pepe"}))), "193.169.238.10")
+        return c
+
+    def order_json(self, oid, item, price, kind, amount=10):
+        return json.dumps({"Id": oid, "ItemTypeId": item, "QualityLevel": 2, "EnchantmentLevel": 0,
+                           "UnitPriceSilver": price * 10000, "Amount": amount, "AuctionType": kind, "LocationId": None})
+
+    def test_direct_buy_recorded_when_server_confirms(self):
+        c = self.collector()
+        c.listener.feed(pb.packet(pb.reliable(3, pb.response(81, {}, debug_slot=[self.order_json(900001, "T4_BAG", 1200, "offer")]))))
+        c.listener.feed(pb.packet(pb.reliable(2, pb.request(83, {1: 3, 2: 900001}))))
+        self.assertEqual(self.moves, [])                       # aún sin confirmar
+        c.listener.feed(pb.packet(pb.reliable(3, pb.response(83, {}))))
+        [m] = self.moves
+        self.assertEqual((m["kind"], m["item"], m["qty"], m["silver"], m["location"], m["server"]),
+                         ("buy_direct", "T4_BAG", 3, 3600.0, "Lymhurst", "europe"))
+
+    def test_failed_buy_and_unknown_order_are_ignored(self):
+        c = self.collector()
+        c.listener.feed(pb.packet(pb.reliable(3, pb.response(81, {}, debug_slot=[self.order_json(900001, "T4_BAG", 1200, "offer")]))))
+        c.listener.feed(pb.packet(pb.reliable(2, pb.request(83, {1: 3, 2: 900001}))))
+        c.listener.feed(pb.packet(pb.reliable(3, pb.response(83, {}, return_code=-1))))   # el servidor la rechaza
+        c.listener.feed(pb.packet(pb.reliable(2, pb.request(83, {1: 3, 2: 555}))))        # id que no es de ninguna orden vista
+        c.listener.feed(pb.packet(pb.reliable(3, pb.response(83, {}))))
+        self.assertEqual(self.moves, [])
+
+    def test_quick_sell(self):
+        c = self.collector()
+        c.listener.feed(pb.packet(pb.reliable(3, pb.response(82, {}, debug_slot=[self.order_json(900002, "T4_BAG", 2000, "request")]))))
+        c.listener.feed(pb.packet(pb.reliable(2, pb.request(60, {4: 2, 1: 900002}))))
+        c.listener.feed(pb.packet(pb.reliable(3, pb.response(60, {}))))
+        self.assertEqual([(m["kind"], m["qty"], m["silver"]) for m in self.moves], [("quick_sell", 2, 4000.0)])
+
+    def test_mail_recorded_once_opened(self):
+        c = self.collector()
+        ticks = 621355968000000000 + 1_800_000_000 * 10_000_000
+        c.listener.feed(pb.packet(pb.reliable(3, pb.response(170, {
+            3: pb.IntList([71, 72, 73]), 7: ["1002", "3003", "0007"], 12: pb.IntList([ticks, ticks, ticks]),
+            11: ["MARKETPLACE_SELLORDER_FINISHED_SUMMARY", "MARKETPLACE_BUYORDER_FINISHED_SUMMARY", "GUILD_INVITE"]}))))
+        self.assertEqual(self.moves, [])                       # la lista sola no trae el contenido
+        c.listener.feed(pb.packet(pb.reliable(3, pb.response(172, {0: 71, 1: "4|T5_BAG@1|800000000|200000000"}))))
+        c.listener.feed(pb.packet(pb.reliable(3, pb.response(172, {0: 72, 1: "10|T4_PLANKS|11000100000|1100010000"}))))
+        c.listener.feed(pb.packet(pb.reliable(3, pb.response(172, {0: 73, 1: "hola|que|tal|"}))))   # no es de mercado
+        self.assertEqual([(m["key"], m["kind"], m["item"], m["qty"], m["silver"], m["location"], m["ts"]) for m in self.moves],
+                         [("mail:71", "sell_order", "T5_BAG@1", 4, 80000.0, "Lymhurst", 1_800_000_000.0),
+                          ("mail:72", "buy_order", "T4_PLANKS", 10, 1100010.0, BLACK_MARKET, 1_800_000_000.0)])
+
+    def test_parse_mail_formats(self):
+        from albionbm.game import parse_mail
+        self.assertEqual(parse_mail("MARKETPLACE_SELLORDER_EXPIRED_SUMMARY", "6|53|4420680000|T6_OFF_HORN_KEEPER@1|"),
+                         {"kind": "sell_order", "item": "T6_OFF_HORN_KEEPER@1", "qty": 6, "silver": 442068.0})
+        m = parse_mail("MARKETPLACE_BUYORDER_EXPIRED_SUMMARY", "23|100|65450000000|T5_ALCHEMY_RARE_PANTHER|")
+        self.assertEqual((m["kind"], m["qty"]), ("buy_order", 23))
+        self.assertAlmostEqual(m["silver"], 6545000 / 77 * 23)
+        self.assertIsNone(parse_mail("MARKETPLACE_SELLORDER_EXPIRED_SUMMARY", "0|39|0|T7_JOURNAL_HUNTER_FULL|"))  # no se vendió nada
+        self.assertIsNone(parse_mail("MARKETPLACE_SELLORDER_FINISHED_SUMMARY", "basura"))
+
+    def test_realized_profit_uses_average_cost(self):
+        from albionbm.movements import net_silver, profit_since, realize
+        mv = lambda ts, kind, item, qty, silver: {"key": str(ts), "ts": ts, "kind": kind, "item": item, "qty": qty, "silver": silver}
+        rows, s = realize([mv(1, "buy_direct", "A", 10, 10000), mv(2, "buy_order", "A", 10, 20000),
+                           mv(3, "quick_sell", "A", 5, 10000), mv(4, "sell_order", "B", 1, 1000)], premium=True)
+        self.assertAlmostEqual(rows[1]["net"], 20500)                       # +2,5 % por publicar la orden
+        avg = (10000 + 20500) / 20
+        self.assertAlmostEqual(rows[2]["profit"], 10000 * 0.96 - avg * 5)   # venta rápida: solo el 4 %
+        self.assertIsNone(rows[3]["profit"])                                # de B no se vio la compra
+        self.assertEqual(rows[3]["unknown"], 1)
+        self.assertAlmostEqual(s["profit"], rows[2]["profit"])
+        self.assertAlmostEqual(s["unknown_revenue"], 1000 * (1 - 0.04 - 0.025))
+        self.assertEqual(s["stock_units"], 15)
+        self.assertAlmostEqual(profit_since(rows, 3), rows[2]["profit"])
+        self.assertAlmostEqual(net_silver("quick_sell", 1000, False), 920)
+
+    def test_store_movements_deduplicate(self):
+        with tempfile.TemporaryDirectory() as d:
+            s = PriceStore(os.path.join(d, "p.db"))
+            m = {"key": "mail:1", "server": "europe", "ts": 5.0, "kind": "sell_order", "item": "A", "qty": 2, "silver": 100.0, "location": "Lymhurst"}
+            self.assertTrue(s.add_movement(m))
+            self.assertFalse(s.add_movement(m))                # el mismo correo abierto otra vez
+            self.assertEqual(len(s.load_movements("europe")), 1)
+            s.delete_movement("mail:1")
+            self.assertEqual(s.load_movements("europe"), [])
+            s.close()
+
+
 class LocationTests(unittest.TestCase):
     def test_ids(self):
         self.assertEqual(resolve_location("3003"), BLACK_MARKET)

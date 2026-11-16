@@ -16,6 +16,7 @@ from .calc_gui import ItemPicker, fmt, num, run_async
 from .export import export_dir
 from .game import BLACK_MARKET, CITIES
 from .items import NOT_BLACK_MARKET
+from .movements import BUYS, KIND_LABELS, profit_since, realize
 from .store import default_db_path
 
 QUALITIES = list(QUALITY_NAMES.values())
@@ -66,7 +67,9 @@ class MoreWindow:
         self.ledger = LedgerTab(self.nb, self)
         self.nb.add(self.favs.frame, text="Favoritos y avisos")
         self.nb.add(self.hist.frame, text="Historial de precios")
-        self.nb.add(self.ledger.frame, text="Registro de ganancias")
+        self.nb.add(self.ledger.frame, text="Registro manual")
+        self.auto = AutoLedgerTab(self.nb, self)
+        self.nb.add(self.auto.frame, text="Historial automático")
 
     def exists(self) -> bool:
         return bool(self.win.winfo_exists())
@@ -501,5 +504,101 @@ class LedgerTab:
             with open(path, "w", encoding="utf-8-sig") as f:  # con BOM para que Excel lea bien los acentos
                 f.write(self.csv_text())
             messagebox.showinfo("Albion BM", f"Registro guardado en:\n{path}", parent=self.o.win)
+        except OSError as e:
+            messagebox.showerror("Albion BM", f"No se pudo guardar: {e}", parent=self.o.win)
+
+
+# ---------------------------------------------------------------------------- historial automático
+
+class AutoLedgerTab:
+    """Compras y ventas leídas del juego (correos del mercado, compras directas y ventas rápidas)."""
+
+    def __init__(self, parent, owner: MoreWindow):
+        self.o, self.seen_version, self.rows = owner, -1, []
+        f = self.frame = ttk.Frame(parent, padding=10)
+        self.totals = tk.StringVar()
+        ttk.Label(f, textvariable=self.totals, font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        self.detail = tk.StringVar()
+        ttk.Label(f, textvariable=self.detail, foreground="gray", wraplength=820, justify="left").pack(anchor="w", pady=(2, 6))
+        ttk.Label(f, foreground="gray", wraplength=820, justify="left", text=(
+            "Se apunta solo con la app abierta y la captura activa: las compras directas y ventas rápidas al "
+            "hacerlas, y las órdenes cuando ABRES su correo en el juego. El beneficio de cada venta usa el coste "
+            "medio de lo que la app te vio comprar de ese objeto; si no vio la compra, sale «—».")).pack(anchor="w")
+        cols = [("date", "Fecha", 110, "w"), ("kind", "Tipo", 120, "w"), ("name", "Objeto", 230, "w"), ("qty", "Uds.", 55, "e"),
+                ("net", "Plata neta", 100, "e"), ("profit", "Beneficio", 100, "e"), ("loc", "Dónde", 100, "w")]
+        box = ttk.Frame(f)
+        box.pack(fill="both", expand=True, pady=8)
+        self.tree = ttk.Treeview(box, columns=[c[0] for c in cols], show="headings", selectmode="browse")
+        for key, title, width, anchor in cols:
+            self.tree.heading(key, text=title)
+            self.tree.column(key, width=width, anchor=anchor, stretch=key == "name")
+        vs = ttk.Scrollbar(box, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vs.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        vs.pack(side="right", fill="y")
+        self.tree.tag_configure("buy", foreground="#6b665c")
+        self.tree.tag_configure("neg", foreground="#b3261e")
+        self.tree.tag_configure("pos", foreground="#1d7a3a")
+        bar = ttk.Frame(f)
+        bar.pack(fill="x")
+        ttk.Button(bar, text="Borrar el seleccionado", command=self.remove).pack(side="left")
+        ttk.Button(bar, text="Exportar a CSV", command=self.export_csv).pack(side="right")
+        self.tick()
+
+    def tick(self) -> None:
+        """Se refresca sola cuando la app apunta un movimiento nuevo."""
+        if not self.o.exists():
+            return
+        if self.o.app.store.movements_version != self.seen_version:
+            self.render()
+        self.o.win.after(1500, self.tick)
+
+    def render(self) -> None:
+        app = self.o.app
+        self.seen_version = app.store.movements_version
+        self.rows, s = realize(app.store.load_movements(app.effective_server()), app.premium_var.get())
+        now = time.time()
+        midnight = time.mktime(time.localtime(now)[:3] + (0, 0, 0, 0, 0, -1))
+        sign = lambda v: ("+" if v > 0 else "") + fmt(v)
+        self.totals.set(f"Beneficio  ·  Hoy: {sign(profit_since(self.rows, midnight))}     "
+                        f"7 días: {sign(profit_since(self.rows, now - 7 * 86400))}     Total: {sign(s['profit'])}")
+        detail = f"Gastado: {fmt(s['spent'])}  ·  Ingresado: {fmt(s['earned'])}  ·  Sin vender: {fmt(s['stock_units'])} uds. que costaron {fmt(s['stock_cost'])}"
+        if s["unknown_revenue"]:
+            detail += f"  ·  Ventas sin coste conocido: {fmt(s['unknown_revenue'])} (no cuentan en el beneficio)"
+        self.detail.set(detail if self.rows else "Todavía no hay movimientos. Compra o vende en el mercado con la app abierta, o abre un correo del mercado.")
+        self.tree.delete(*self.tree.get_children())
+        cat = app.catalog
+        for r in reversed(self.rows):
+            buy = r["kind"] in BUYS
+            tag = "buy" if buy else "neg" if (r["profit"] or 0) < 0 else "pos" if r["profit"] else ""
+            self.tree.insert("", "end", iid=r["key"], tags=(tag,), values=(
+                time.strftime("%d/%m %H:%M", time.localtime(r["ts"])), KIND_LABELS[r["kind"]],
+                f"{cat.name(r['item'])} ({cat.label(r['item'])})", fmt(r["qty"]),
+                ("−" if buy else "+") + fmt(r["net"]),
+                "" if buy else "—" if r["profit"] is None else sign(r["profit"]),
+                city_label(r["location"]) if r["location"] else ""))
+
+    def remove(self) -> None:
+        sel = self.tree.selection()
+        if sel and messagebox.askyesno("Albion BM", "¿Borrar este movimiento del historial?", parent=self.o.win):
+            self.o.app.store.delete_movement(sel[0])
+            self.render()
+
+    def export_csv(self) -> None:
+        if not self.rows:
+            messagebox.showinfo("Albion BM", "El historial está vacío.", parent=self.o.win)
+            return
+        cat = self.o.app.catalog
+        lines = ["fecha;tipo;objeto;id;cantidad;plata_bruta;plata_neta;beneficio;lugar"]
+        for r in self.rows:
+            name = '"' + cat.name(r["item"]).replace('"', '""') + '"'
+            lines.append(";".join(str(x) for x in [
+                time.strftime("%Y-%m-%d %H:%M", time.localtime(r["ts"])), KIND_LABELS[r["kind"]], name, r["item"], r["qty"],
+                round(r["silver"]), round(r["net"]), "" if r["profit"] is None else round(r["profit"]), r["location"]]))
+        try:
+            path = os.path.join(export_dir(), time.strftime("historial_albionbm_%Y%m%d.csv"))
+            with open(path, "w", encoding="utf-8-sig") as f:
+                f.write("\n".join(lines))
+            messagebox.showinfo("Albion BM", f"Historial guardado en:\n{path}", parent=self.o.win)
         except OSError as e:
             messagebox.showerror("Albion BM", f"No se pudo guardar: {e}", parent=self.o.win)

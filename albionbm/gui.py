@@ -80,7 +80,7 @@ class App:
         root.minsize(980, 600)
         self._build_ui()
 
-        self.listener = GameListener(self._on_live_prices, self._on_game_status)
+        self.listener = GameListener(self._on_live_prices, self._on_game_status, self._on_movement)
         self.capture = Capture(self.listener.feed, lambda m: self.events.put(("capture_error", m)))
         self._start_capture()
 
@@ -289,6 +289,14 @@ class App:
         n = self.store.upsert(srv, prices, source="juego", books=books)
         locs = sorted({k[2] for k in prices})
         self.events.put(("prices", f"{len(prices)} precios leídos en {', '.join(locs)} ({n} actualizados)"))
+
+    def _on_movement(self, m: dict) -> None:
+        """Una compra o venta tuya leída del juego (correo abierto, compra directa o venta rápida)."""
+        from .movements import KIND_LABELS
+        m["server"] = m.get("server") or self.effective_server()
+        if self.store.add_movement(m):
+            self.events.put(("log", f"💰 {KIND_LABELS[m['kind']]}: {m['qty']} × {self.catalog.name(m['item'])} "
+                                    f"por {fmt(m['silver'])} de plata. Apuntado en el historial."))
 
     def _on_game_status(self, kind: str, value: str) -> None:
         self.events.put((kind, value))

@@ -38,11 +38,17 @@ class PriceStore:
                 PRIMARY KEY (server, item, quality, location))"""
         )
         self._db.execute("DROP TABLE IF EXISTS volumes")  # tabla de la v1.2, sustituida por stats
+        self._db.execute(
+            """CREATE TABLE IF NOT EXISTS movements (
+                key TEXT PRIMARY KEY, server TEXT, ts REAL, kind TEXT, item TEXT, quality INTEGER,
+                qty INTEGER, silver REAL, location TEXT)"""
+        )
         cols = [r[1] for r in self._db.execute("PRAGMA table_info(prices)")]
         if "book" not in cols:  # migración desde la v1.0
             self._db.execute("ALTER TABLE prices ADD COLUMN book TEXT")
         self._db.commit()
         self.version = 0  # aumenta cada vez que cambian los datos
+        self.movements_version = 0
 
     def upsert(self, server: str, prices: Dict[Key, int], ts: Optional[float] = None,
                source: str = "juego", timestamps: Optional[Dict[Key, float]] = None,
@@ -100,6 +106,32 @@ class PriceStore:
                 "SELECT item, quality, location, daily, avg_price FROM stats WHERE server=? AND ts>=?",
                 (server, time.time() - max_age_days * 86400))
             return {(r[0], r[1], r[2]): (r[3], r[4]) for r in cur}
+
+    # ---- tus compras y ventas leídas del juego
+    def add_movement(self, m: dict) -> bool:
+        """Guarda un movimiento; devuelve False si ya estaba (p. ej. un correo abierto dos veces)."""
+        with self._lock:
+            cur = self._db.execute(
+                "INSERT OR IGNORE INTO movements VALUES (?,?,?,?,?,?,?,?,?)",
+                (m["key"], m.get("server", ""), float(m["ts"]), m["kind"], m["item"], int(m.get("quality") or 0),
+                 int(m["qty"]), float(m["silver"]), m.get("location") or ""))
+            self._db.commit()
+            if cur.rowcount:
+                self.movements_version += 1
+            return bool(cur.rowcount)
+
+    def load_movements(self, server: str) -> list:
+        with self._lock:
+            cur = self._db.execute(
+                "SELECT key, ts, kind, item, quality, qty, silver, location FROM movements WHERE server=? ORDER BY ts",
+                (server,))
+            return [dict(zip(("key", "ts", "kind", "item", "quality", "qty", "silver", "location"), r)) for r in cur]
+
+    def delete_movement(self, key: str) -> None:
+        with self._lock:
+            self._db.execute("DELETE FROM movements WHERE key=?", (key,))
+            self._db.commit()
+            self.movements_version += 1
 
     def count_live(self, server: str, since_hours: float = 24) -> int:
         with self._lock:

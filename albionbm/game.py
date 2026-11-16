@@ -73,6 +73,7 @@ class Order:
     kind: str           # "offer" = orden de venta, "request" = orden de compra
     price: int          # plata por unidad
     amount: int
+    order_id: int = 0   # identificador de la orden en el juego (para reconocer tus compras y ventas)
 
 
 def parse_orders(strings: List[str], default_location: Optional[str]) -> List[Order]:
@@ -98,8 +99,53 @@ def parse_orders(strings: List[str], default_location: Optional[str]) -> List[Or
         price = int(o["UnitPriceSilver"]) // 10000  # el juego usa céntimos de céntimo
         if price <= 0:
             continue
-        out.append(Order(item, int(o.get("QualityLevel") or 1), loc, kind, price, int(o.get("Amount") or 0)))
+        try:
+            oid = int(o.get("Id") or 0)
+        except (TypeError, ValueError):
+            oid = 0
+        out.append(Order(item, int(o.get("QualityLevel") or 1), loc, kind, price, int(o.get("Amount") or 0), oid))
     return out
+
+
+# ---------------------------------------------------------------------------- tus compras y ventas
+
+MAIL_TYPES = {
+    "MARKETPLACE_SELLORDER_FINISHED_SUMMARY": "sell_order",
+    "MARKETPLACE_SELLORDER_EXPIRED_SUMMARY": "sell_order",
+    "BLACKMARKET_SELLORDER_EXPIRED_SUMMARY": "sell_order",
+    "MARKETPLACE_BUYORDER_FINISHED_SUMMARY": "buy_order",
+    "MARKETPLACE_BUYORDER_EXPIRED_SUMMARY": "buy_order",
+}
+DOTNET_EPOCH_TICKS = 621355968000000000  # ticks de .NET (100 ns desde el año 1) hasta 1970
+
+
+def parse_mail(mail_type: str, body: str) -> Optional[dict]:
+    """Correo de mercado -> {"kind", "item", "qty", "silver"} (plata bruta total), o None si no hubo movimiento.
+
+    Formatos (fuente: AlbionDataAvalonia), con la plata multiplicada por 10.000:
+      SELLORDER_FINISHED  CANTIDAD|OBJETO|PLATA_TOTAL|PLATA_UNIDAD
+      BUYORDER_FINISHED   CANTIDAD|OBJETO|PLATA_TOTAL|PLATA_UNIDAD
+      SELLORDER_EXPIRED   VENDIDAS|TOTAL|PLATA_TOTAL|OBJETO      (también el del Mercado Negro)
+      BUYORDER_EXPIRED    COMPRADAS|TOTAL|PLATA_DEVUELTA|OBJETO
+    """
+    kind = MAIL_TYPES.get(mail_type)
+    parts = body.split("|")
+    try:
+        if kind is None or len(parts) < 4:
+            return None
+        if mail_type.endswith("FINISHED_SUMMARY"):
+            qty, item, silver = int(parts[0]), parts[1], int(parts[2]) / 10000
+        elif mail_type == "MARKETPLACE_BUYORDER_EXPIRED_SUMMARY":
+            qty, total, refund, item = int(parts[0]), int(parts[1]), int(parts[2]) / 10000, parts[3]
+            # No dice lo pagado: se deduce del precio límite (plata devuelta / unidades sin comprar)
+            silver = refund / (total - qty) * qty if total > qty else 0.0
+        else:
+            qty, item, silver = int(parts[0]), parts[3], int(parts[2]) / 10000
+    except (ValueError, ZeroDivisionError):
+        return None
+    if qty <= 0 or not item or silver <= 0:
+        return None
+    return {"kind": kind, "item": item, "qty": qty, "silver": silver}
 
 
 def best_prices(orders: List[Order]) -> Dict[tuple, int]:
@@ -138,8 +184,13 @@ class GameListener:
     ENCRYPTION_WINDOW = 3.0
 
     def __init__(self, on_prices: Callable[[str, Optional[str], Dict[tuple, int], Dict[tuple, list]], None],
-                 on_status: Optional[Callable[[str, str], None]] = None):
+                 on_status: Optional[Callable[[str, str], None]] = None,
+                 on_movement: Optional[Callable[[dict], None]] = None):
         self.on_prices = on_prices
+        self.on_movement = on_movement or (lambda movement: None)
+        self._orders: "OrderedDict[int, Order]" = OrderedDict()  # órdenes vistas, por id
+        self._pending: Dict[int, tuple] = {}                     # código de operación -> (movimiento, hora)
+        self._mails: Dict[int, tuple] = {}                       # id de correo -> (tipo, ubicación, fecha)
         self.on_status = on_status or (lambda kind, msg: None)
         self.location: Optional[str] = None
         self.server: Optional[str] = None
@@ -172,6 +223,24 @@ class GameListener:
     def _on_request(self, op_code: int, params: dict) -> None:
         # Cualquier petición con listas de IDs de objeto suele ser una consulta de mercado.
         self._last_market_request = time.time()
+        self._detect_trade(params.get(253, op_code), params)
+
+    def _detect_trade(self, code, params: dict) -> None:
+        """Compra directa (parámetros 1 = cantidad, 2 = id de orden de venta) o venta rápida
+        (4 = cantidad, 1 = id de orden de compra). Se reconoce porque el id es de una orden que acabas de
+        ver en el mercado, así no depende de los códigos de operación. Queda pendiente hasta que el
+        servidor confirma."""
+        is_int = lambda v: isinstance(v, int) and not isinstance(v, bool)
+        for kind, amount_key, order_key, order_kind in (("buy_direct", 1, 2, "offer"), ("quick_sell", 4, 1, "request")):
+            amount, oid = params.get(amount_key), params.get(order_key)
+            order = self._orders.get(oid) if is_int(oid) else None
+            if order and order.kind == order_kind and is_int(amount) and amount > 0:
+                now = time.time()
+                self._pending[code] = ({
+                    "key": f"trade:{oid}:{amount}:{int(now)}", "ts": now, "kind": kind, "item": order.item_id,
+                    "quality": order.quality, "qty": amount, "silver": float(order.price * amount),
+                    "location": order.location}, now)
+                return
 
     def _on_encrypted(self) -> None:
         if not self.encrypted and time.time() - self._last_market_request < self.ENCRYPTION_WINDOW:
@@ -184,6 +253,12 @@ class GameListener:
         data = params.get(0)
         if isinstance(data, list) and data and all(isinstance(x, str) for x in data) and "UnitPriceSilver" in data[0]:
             orders = parse_orders(data, self.location)
+            for o in orders:
+                if o.order_id:
+                    self._orders[o.order_id] = o
+                    self._orders.move_to_end(o.order_id)
+            while len(self._orders) > 20000:
+                self._orders.popitem(last=False)
             if orders:
                 if self.encrypted:
                     self.encrypted = False
@@ -191,8 +266,19 @@ class GameListener:
                 self.on_prices(self.server or "", self.location, best_prices(orders), order_books(orders))
             return
 
-        # 2) Entrada a una zona (Join): parámetro 8 = ID de ubicación, 2 = nombre del personaje
         code = params.get(253, op_code)
+
+        # 2) Confirmación de una compra directa o venta rápida pendiente
+        pending = self._pending.pop(code, None) if isinstance(code, int) else None
+        if pending and time.time() - pending[1] < 10 and return_code == 0:
+            self.on_movement(dict(pending[0], server=self.server or ""))
+            return
+
+        # 3) Correos del mercado: primero llega la lista (ids, tipos, ubicaciones) y, al abrir uno, su contenido
+        if self._mail_list(params) or self._mail_body(params):
+            return
+
+        # 4) Entrada a una zona (Join): parámetro 8 = ID de ubicación, 2 = nombre del personaje
         if isinstance(code, int) and code not in (OP_JOIN,) and ((code << 8) & 0xFFFF | (code >> 8)) == OP_JOIN:
             code = OP_JOIN
         loc_raw = params.get(8)
@@ -202,3 +288,30 @@ class GameListener:
                 if loc != self.location:
                     self.location = loc
                     self.on_status("location", loc or "")
+
+    def _mail_list(self, params: dict) -> bool:
+        str_lists = [v for v in params.values() if isinstance(v, list) and v and all(isinstance(x, str) for x in v)]
+        types = next((v for v in str_lists if any(x in MAIL_TYPES for x in v)), None)
+        ids = params.get(3)
+        if types is None or not isinstance(ids, list) or len(ids) != len(types):
+            return False
+        locs = next((v for v in str_lists if v is not types and len(v) == len(types)), [None] * len(types))
+        ticks = next((v for v in params.values() if isinstance(v, list) and len(v) == len(types) and v
+                      and all(isinstance(x, int) and x > DOTNET_EPOCH_TICKS for x in v)), None)
+        for i, mail_id in enumerate(ids):
+            if types[i] in MAIL_TYPES and isinstance(mail_id, int):
+                ts = (ticks[i] - DOTNET_EPOCH_TICKS) / 1e7 if ticks else None
+                self._mails[mail_id] = (types[i], resolve_location(locs[i]), ts)
+        return True
+
+    def _mail_body(self, params: dict) -> bool:
+        mail_id, body = params.get(0), params.get(1)
+        info = self._mails.get(mail_id) if isinstance(mail_id, int) and not isinstance(mail_id, bool) else None
+        if info is None or not isinstance(body, str):
+            return False
+        mail_type, location, ts = info
+        m = parse_mail(mail_type, body)
+        if m:
+            self.on_movement(dict(m, key=f"mail:{mail_id}", ts=ts or time.time(), quality=0, location=location or "",
+                                  server=self.server or ""))
+        return True
