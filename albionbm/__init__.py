@@ -1,2 +1,2 @@
-"""Albion BM: comparador de precios ciudades vs Mercado Negro leyendo el juego."""
-__version__ = "1.2.0"
+"""Albion BM: oportunidades de comercio en Albion Online leyendo el juego y la API pública."""
+__version__ = "1.3.0"

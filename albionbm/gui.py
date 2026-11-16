@@ -11,21 +11,25 @@ from tkinter import messagebox, ttk
 from typing import Dict, List, Optional
 
 from . import __version__
-from .api import fetch_bm_history, fetch_prices, history_to_volumes, rows_to_prices
-from .calc import QUALITY_NAMES, Opportunity, best_per_item, compute
+from .api import fetch_history, fetch_prices, history_to_stats, rows_to_prices
+from .calc import PROFILES, QUALITY_NAMES, STRATEGIES, Opportunity, best_per_item, compute, plan, plan_routes
 from .export import build_report, save_report
 from .capture import Capture, CaptureError
 from .game import BLACK_MARKET, CITIES, GameListener
-from .items import CATEGORY_NAMES, Catalog, load_items
+from .items import CATEGORY_NAMES, NOT_BLACK_MARKET, Catalog, load_items
 from .store import PriceStore, default_db_path
 
 SERVERS = {"Automático": None, "Europa": "europe", "América (West)": "west", "Asia (East)": "east"}
 SERVER_LABEL = {"europe": "Europa", "west": "América", "east": "Asia"}
+STRATEGY_BY_LABEL = {v: k for k, v in STRATEGIES.items()}
+PROFILE_BY_LABEL = {p.name: k for k, p in PROFILES.items()}
+MAX_HISTORY_ITEMS = 1500
 MAX_ROWS = 1000
 
 DEFAULTS = {
     "server": "Automático", "premium": True, "buy_mode": "instant", "best_only": True,
     "min_pct": "10", "min_silver": "5000", "max_cost": "", "max_age": "6", "search": "", "capital": "", "auto": False, "auto_min": "15",
+    "strategy": "bm", "hide_susp": True, "weight": "", "profile": "balanced", "alert": False,
     "cats": ["weapons", "armors", "head", "shoes", "offhands", "bags", "capes"],
     "tiers": [4, 5, 6], "enchs": [0, 1], "quals": [1, 2, 3], "cities": list(CITIES),
 }
@@ -65,10 +69,12 @@ class App:
         self.rendered_version = -1
         self.opps: List[Opportunity] = []
         self.sort_key, self.sort_desc = "percent", True
+        self.alert_seen: Optional[set] = None
+        self.plan_win: Optional[tk.Toplevel] = None
         self.settings = self._load_settings()
 
-        root.title(f"Albion · Mercado Negro  v{__version__}")
-        root.geometry("1320x820")
+        root.title(f"Albion · Comercio y Mercado Negro  v{__version__}")
+        root.geometry("1440x860")
         root.minsize(980, 600)
         self._build_ui()
 
@@ -150,21 +156,29 @@ class App:
         checks(filt, "tiers", [4, 5, 6, 7, 8], lambda v: "Tier" if v is None else f"T{v}", 1)
         checks(filt, "enchs", [0, 1, 2, 3, 4], lambda v: "Encantamiento" if v is None else f".{v}", 2)
         checks(filt, "quals", [1, 2, 3, 4, 5], lambda v: "Calidad" if v is None else QUALITY_NAMES[v], 3)
-        checks(filt, "cities", CITIES, lambda v: "Comprar en" if v is None else v, 4)
+        checks(filt, "cities", CITIES, lambda v: "Ciudades" if v is None else v, 4)
 
         opts = ttk.LabelFrame(filt, text="Opciones", padding=6)
         opts.grid(row=0, column=5, sticky="nsew", pady=4)
+        self.strategy_var = tk.StringVar(value=STRATEGIES.get(s["strategy"], STRATEGIES["bm"]))
+        scb = ttk.Combobox(opts, textvariable=self.strategy_var, values=list(STRATEGIES.values()),
+                           state="readonly", width=30)
+        scb.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 3))
+        scb.bind("<<ComboboxSelected>>", lambda e: self._filters_changed())
         self.premium_var = tk.BooleanVar(value=s["premium"])
         ttk.Checkbutton(opts, text="Prémium (impuesto 4 %)", variable=self.premium_var,
-                        command=self._filters_changed).grid(row=0, column=0, sticky="w")
-        self.best_var = tk.BooleanVar(value=s["best_only"])
-        ttk.Checkbutton(opts, text="Solo mejor ciudad", variable=self.best_var,
                         command=self._filters_changed).grid(row=1, column=0, sticky="w")
+        self.best_var = tk.BooleanVar(value=s["best_only"])
+        ttk.Checkbutton(opts, text="Solo mejor ruta", variable=self.best_var,
+                        command=self._filters_changed).grid(row=1, column=1, sticky="w")
         self.buy_mode_var = tk.StringVar(value=s["buy_mode"])
         ttk.Radiobutton(opts, text="Compra directa", value="instant", variable=self.buy_mode_var,
                         command=self._filters_changed).grid(row=2, column=0, sticky="w")
-        ttk.Radiobutton(opts, text="Orden de compra (+2,5 %)", value="order", variable=self.buy_mode_var,
-                        command=self._filters_changed).grid(row=3, column=0, sticky="w")
+        ttk.Radiobutton(opts, text="Orden de compra", value="order", variable=self.buy_mode_var,
+                        command=self._filters_changed).grid(row=2, column=1, sticky="w")
+        self.susp_var = tk.BooleanVar(value=s["hide_susp"])
+        ttk.Checkbutton(opts, text="Ocultar precios sospechosos (⚠)", variable=self.susp_var,
+                        command=self._filters_changed).grid(row=3, column=0, columnspan=2, sticky="w")
 
         # Búsqueda y límites
         row2 = ttk.Frame(self.root, padding=(10, 4, 10, 0))
@@ -175,13 +189,29 @@ class App:
         ttk.Entry(row2, textvariable=self.search_var, width=22).pack(side="left", padx=(4, 12))
         self.entries: Dict[str, tk.StringVar] = {}
         for key, label in [("min_pct", "Benef. mín. %"), ("min_silver", "Benef. mín. plata"),
-                           ("max_cost", "Presupuesto máx."), ("max_age", "Datos máx. (h)"),
-                           ("capital", "Capital")]:
+                           ("max_cost", "Precio máx./ud."), ("max_age", "Datos máx. (h)")]:
             ttk.Label(row2, text=label).pack(side="left")
             var = tk.StringVar(value=s[key])
-            ttk.Entry(row2, textvariable=var, width=10 if key == "capital" else 8).pack(side="left", padx=(4, 10))
+            ttk.Entry(row2, textvariable=var, width=8).pack(side="left", padx=(4, 10))
             var.trace_add("write", lambda *a: self._filters_changed())
             self.entries[key] = var
+        # Inversión: capital, carga, perfil y acciones
+        row3 = ttk.Frame(self.root, padding=(10, 4, 10, 0))
+        row3.pack(fill="x")
+        for key, label, width in [("capital", "Mi capital", 12), ("weight", "Carga máx. por viaje (kg)", 7)]:
+            ttk.Label(row3, text=label).pack(side="left")
+            var = tk.StringVar(value=s[key])
+            ttk.Entry(row3, textvariable=var, width=width).pack(side="left", padx=(4, 12))
+            var.trace_add("write", lambda *a: self._filters_changed())
+            self.entries[key] = var
+        ttk.Label(row3, text="Perfil de riesgo").pack(side="left")
+        self.profile_var = tk.StringVar(value=PROFILES.get(s["profile"], PROFILES["balanced"]).name)
+        pcb = ttk.Combobox(row3, textvariable=self.profile_var, values=[p.name for p in PROFILES.values()],
+                           state="readonly", width=17)
+        pcb.pack(side="left", padx=(4, 0))
+        pcb.bind("<<ComboboxSelected>>", lambda e: self._filters_changed())
+        ttk.Button(row3, text="★ Plan de inversión", command=self._show_plan).pack(side="left", padx=(12, 4))
+        ttk.Button(row3, text="Exportar para Claude", command=self._export).pack(side="left")
 
         # Barra de acciones
         bar = ttk.Frame(self.root, padding=(10, 4))
@@ -196,19 +226,21 @@ class App:
         self.auto_min_var = tk.StringVar(value=s["auto_min"])
         ttk.Entry(bar, textvariable=self.auto_min_var, width=4).pack(side="left")
         ttk.Label(bar, text="min").pack(side="left", padx=(2, 0))
+        self.alert_var = tk.BooleanVar(value=s["alert"])
+        ttk.Checkbutton(bar, text="Avisar de nuevas", variable=self.alert_var, command=self._filters_changed).pack(
+            side="left", padx=(8, 0))
         self.progress = ttk.Progressbar(bar, length=140, mode="determinate")
         self.progress.pack(side="left", padx=8)
         self.count_var = tk.StringVar()
         ttk.Label(bar, textvariable=self.count_var, foreground="gray").pack(side="left")
         ttk.Button(bar, text="Borrar datos guardados", command=self._clear).pack(side="right")
-        ttk.Button(bar, text="Exportar para Claude", command=self._export).pack(side="right", padx=8)
 
         # Tabla
         table = ttk.Frame(self.root, padding=(10, 4))
         table.pack(fill="both", expand=True)
         cols = [("name", "Objeto", 230, "w"), ("tier", "Tier", 45, "center"), ("quality", "Calidad", 170, "w"),
-                ("city", "Comprar en", 100, "w"), ("buy_price", "Precio compra", 95, "e"),
-                ("bm_price", "Paga MN", 90, "e"), ("profit", "Benef./ud.", 85, "e"), ("percent", "%", 65, "e"),
+                ("city", "Comprar en", 100, "w"), ("sell_city", "Vender en", 100, "w"),
+                ("buy_price", "Precio compra", 95, "e"), ("bm_price", "Precio venta", 90, "e"), ("profit", "Benef./ud.", 85, "e"), ("percent", "%", 65, "e"),
                 ("units", "Uds.", 55, "e"), ("invest", "Inversión máx.", 105, "e"),
                 ("total_profit", "Benef. total", 95, "e"), ("age", "Datos", 60, "e"), ("source", "Origen", 85, "center")]
         self.tree = ttk.Treeview(table, columns=[c[0] for c in cols], show="headings", selectmode="browse")
@@ -221,6 +253,7 @@ class App:
         vs.pack(side="right", fill="y")
         self.tree.tag_configure("live", background="#e7f6ea")
         self.tree.tag_configure("neg", foreground="#b3261e")
+        self.tree.tag_configure("susp", foreground="#b26a00")
         self.tree.bind("<Double-1>", self._copy_name)
 
         # Registro de actividad
@@ -314,6 +347,9 @@ class App:
             **{k: v.get().strip() for k, v in self.entries.items()},
             "cats": sel("cats"), "tiers": sel("tiers"), "enchs": sel("enchs"), "quals": sel("quals"),
             "cities": sel("cities"), "auto": self.auto_var.get(), "auto_min": self.auto_min_var.get().strip(),
+            "weight": self.entries["weight"].get().strip(),
+            "strategy": STRATEGY_BY_LABEL.get(self.strategy_var.get(), "bm"), "hide_susp": self.susp_var.get(),
+            "profile": PROFILE_BY_LABEL.get(self.profile_var.get(), "balanced"), "alert": self.alert_var.get(),
         }
 
     def _filters_changed(self) -> None:
@@ -332,24 +368,33 @@ class App:
         except ValueError:
             return default
 
-    def _refresh_table(self) -> None:
-        f = self._read_filters()
-        max_age = self._num(f["max_age"], 24)
-        entries = self.store.load(self.effective_server(), max_age)
+    def _compute(self, f: dict, thresholds: bool = True) -> List[Opportunity]:
+        """Oportunidades para los filtros dados (se puede llamar desde el hilo de la API)."""
+        srv = self.effective_server()
+        entries = self.store.load(srv, self._num(f["max_age"], 24))
         c = self.catalog
-        entries = {k: v for k, v in entries.items()
-                   if c.matches(k[0], f["cats"], f["tiers"], f["enchs"], f["search"])}
+        search = f["search"] if thresholds else ""
+        entries = {k: v for k, v in entries.items() if c.matches(k[0], f["cats"], f["tiers"], f["enchs"], search)}
         opps = compute(entries, f["cities"], f["quals"], f["premium"], f["buy_mode"],
-                       volumes=self.store.load_volumes(self.effective_server()))
+                       strategy=f["strategy"], sell_cities=f["cities"], stats=self.store.load_stats(srv))
+        if not thresholds:
+            return opps
         min_pct, min_silver = self._num(f["min_pct"], -1e18), self._num(f["min_silver"], -1e18)
         max_cost = self._num(f["max_cost"], 1e18)
-        opps = [o for o in opps if o.percent >= min_pct and o.profit >= min_silver and o.buy_price <= max_cost]
+        opps = [o for o in opps if o.percent >= min_pct and o.profit >= min_silver and o.buy_price <= max_cost
+                and not (f["hide_susp"] and o.suspicious)]
         if f["best_only"]:
             opps = best_per_item(opps)
-        self.opps = opps
-        n_ids = len(c.variant_ids(f["cats"], f["tiers"], f["enchs"], f["search"]))
-        self.count_var.set(f"{fmt(n_ids)} objetos en el filtro · {fmt(len(opps))} oportunidades")
+        return opps
+
+    def _refresh_table(self) -> None:
+        f = self._read_filters()
+        self.opps = self._compute(f)
+        n_ids = len(self.catalog.variant_ids(f["cats"], f["tiers"], f["enchs"], f["search"]))
+        self.count_var.set(f"{fmt(n_ids)} objetos en el filtro · {fmt(len(self.opps))} oportunidades")
         self._render()
+        if self.plan_win is not None and self.plan_win.winfo_exists():
+            self._fill_plan()
 
     def _sort_value(self, o: Opportunity):
         k = self.sort_key
@@ -368,7 +413,7 @@ class App:
         if self.sort_key == key:
             self.sort_desc = not self.sort_desc
         else:
-            self.sort_key, self.sort_desc = key, key not in ("name", "city", "tier")
+            self.sort_key, self.sort_desc = key, key not in ("name", "city", "sell_city", "tier")
         self._render()
 
     def _render(self) -> None:
@@ -387,8 +432,11 @@ class App:
                 tags.append("live")
             if o.profit <= 0:
                 tags.append("neg")
-            self.tree.insert("", "end", iid=f"{o.item_id}|{o.quality}|{o.city}", tags=tags, values=(
-                c.name(o.item_id), c.label(o.item_id), q, o.city, fmt(o.buy_price), fmt(o.bm_price),
+            if o.suspicious:
+                tags.append("susp")
+            self.tree.insert("", "end", iid=f"{o.item_id}|{o.quality}|{o.city}|{o.sell_city}", tags=tags, values=(
+                ("⚠ " if o.suspicious else "") + c.name(o.item_id), c.label(o.item_id), q, o.city, o.sell_city,
+                fmt(o.buy_price), fmt(o.bm_price),
                 fmt(o.profit), f"{o.percent:.1f} %", ("~" if o.estimated else "") + fmtn(o.units), fmtn(o.invest), fmtn(o.total_profit), ago(max(o.buy_age_h, o.bm_age_h)), src))
         arrow = " ▼" if self.sort_desc else " ▲"
         for col in self.tree["columns"]:
@@ -407,22 +455,27 @@ class App:
 
     # ------------------------------------------------------------------ API
     def _api_refresh(self, auto: bool = False) -> None:
-        """Descarga de la API los precios de todas las ciudades y del MN (y el volumen diario del MN)
-        para todo lo que marquen los filtros, sin tener que ir mercado a mercado."""
+        """Descarga de la API los precios de todos los mercados de la estrategia para todo lo que marquen
+        los filtros, y después el historial (ventas diarias y precio medio) de lo que da beneficio."""
         if self.api_thread and self.api_thread.is_alive():
             return
         f = self._read_filters()
-        ids = self.catalog.variant_ids(f["cats"], f["tiers"], f["enchs"])  # sin el buscador: todo el filtro
+        bm = f["strategy"] == "bm"
+        cats = [c for c in f["cats"] if not (bm and c in NOT_BLACK_MARKET)]  # el MN no compra recursos, etc.
+        ids = self.catalog.variant_ids(cats, f["tiers"], f["enchs"])  # sin el buscador: todo el filtro
         self.last_api_update = time.time()
         if not ids or not f["cities"] or not f["quals"]:
             if not auto:
-                messagebox.showinfo("Albion BM", "No hay objetos, ciudades o calidades seleccionadas.")
+                messagebox.showinfo("Albion BM", "No hay objetos, ciudades o calidades seleccionadas."
+                                    + (" El Mercado Negro solo compra equipo: para recursos, consumibles, "
+                                       "monturas o artefactos elige una estrategia «Entre ciudades»." if bm else ""))
             return
         if not auto and len(ids) > 4000 and not messagebox.askyesno(
                 "Albion BM", f"Vas a consultar {fmt(len(ids))} objetos; tardará unos minutos. ¿Continuar?"):
             return
         qualities = list(range(1, max(f["quals"]) + 1))
-        locations = f["cities"] + [BLACK_MARKET]
+        sell_locs = [BLACK_MARKET] if bm else list(f["cities"])
+        locations = f["cities"] + ([BLACK_MARKET] if bm else [])
         server = self.effective_server()
         self.api_stop = False
         self.api_btn.configure(state="disabled")
@@ -441,19 +494,27 @@ class App:
                 n = self.store.upsert(server, prices, source="api", timestamps=stamps)
                 self.events.put(("log", f"Precios: {fmt(len(prices))} recibidos, {fmt(n)} actualizados "
                                         "(los leídos en el juego más recientes se conservan)."))
-                # Volumen diario del MN solo para lo que el MN está comprando
-                bm_ids = sorted({k[0] for k in prices if k[2] == BLACK_MARKET and k[3] == "request"})
-                if bm_ids and not self.api_stop:
-                    hist = fetch_bm_history(server, bm_ids, qualities,
-                                            progress=lambda n, t: self.events.put(("api_progress", 60 + n / t * 40)),
-                                            should_stop=lambda: self.api_stop)
-                    vols = history_to_volumes(hist)
-                    self.store.upsert_volumes(server, vols)
-                    self.events.put(("log", f"Volumen diario del Mercado Negro: {fmt(len(vols))} objetos."))
+                # Historial solo de lo que da beneficio: cuánto se vende al día y a qué precio medio
+                best: Dict[str, float] = {}
+                for o in self._compute(f, thresholds=False):
+                    if o.profit > 0 and o.item_id in id_set:
+                        best[o.item_id] = max(best.get(o.item_id, 0), o.profit)
+                # ...y solo si no tenemos ya su historial reciente (cambia despacio; ahorra peticiones)
+                fresh = {k[0] for k in self.store.load_stats(server, max_age_days=0.25) if k[2] in sell_locs}
+                hist_ids = [i for i in sorted(best, key=lambda i: -best[i]) if i not in fresh][:MAX_HISTORY_ITEMS]
+                if hist_ids and not self.api_stop:
+                    self.events.put(("log", f"Descargando historial de ventas de {fmt(len(hist_ids))} objetos…"))
+                    hist = fetch_history(server, hist_ids, sell_locs, qualities,
+                                         progress=lambda n, t: self.events.put(("api_progress", 60 + n / t * 40)),
+                                         should_stop=lambda: self.api_stop)
+                    stats = history_to_stats(hist)
+                    self.store.upsert_stats(server, stats)
+                    self.events.put(("log", f"Historial: {fmt(len(stats))} series (ventas/día y precio medio)."))
                 self.events.put(("api_done", "Actualización terminada." if not self.api_stop else "Actualización detenida."))
             except Exception as e:
                 self.events.put(("api_done", f"Error consultando la API: {e}"))
 
+        id_set = set(ids)
         self.api_thread = threading.Thread(target=work, daemon=True)
         self.api_thread.start()
 
@@ -466,6 +527,106 @@ class App:
         self.api_stop_btn.configure(state="disabled")
         self.progress["value"] = 0
         self._log(msg)
+        self.rendered_version = self.store.version
+        self._refresh_table()
+        self._check_alerts()
+
+    def _check_alerts(self) -> None:
+        """Avisa (sonido y registro) de oportunidades que no estaban en la actualización anterior."""
+        keys = {(o.item_id, o.quality, o.city, o.sell_city): o for o in self.opps if not o.suspicious}
+        if self.alert_seen is not None and self.alert_var.get():
+            new = [o for k, o in keys.items() if k not in self.alert_seen]
+            if new:
+                top = max(new, key=lambda o: o.profit)
+                self.root.bell()
+                self._log(f"🔔 {len(new)} oportunidades nuevas. La mejor: {self.catalog.name(top.item_id)} "
+                          f"({self.catalog.label(top.item_id)}) {top.city} → {top.sell_city}, "
+                          f"+{fmt(top.profit)} por unidad ({top.percent:.0f} %).")
+                self.status_var.set(f"🔔 {len(new)} oportunidades nuevas con tus filtros.")
+        self.alert_seen = set(keys)
+
+    # ------------------------------------------------------------------ plan de inversión
+    def _show_plan(self) -> None:
+        if self.plan_win is not None and self.plan_win.winfo_exists():
+            self.plan_win.lift()
+            self._fill_plan()
+            return
+        win = self.plan_win = tk.Toplevel(self.root)
+        win.title("Plan de inversión")
+        win.geometry("1040x640")
+        self.plan_info = tk.StringVar()
+        ttk.Label(win, textvariable=self.plan_info, padding=(10, 8), wraplength=1000, justify="left").pack(fill="x")
+        ttk.Label(win, text="Rutas (elige una para ver qué comprar):", padding=(10, 0)).pack(anchor="w")
+        rcols = [("route", "Ruta", 300, "w"), ("n", "Objetos", 70, "e"), ("invest", "Inversión", 120, "e"),
+                 ("profit", "Benef. estimado", 130, "e"), ("pct", "%", 70, "e"), ("weight", "Peso (kg)", 90, "e")]
+        self.route_tree = ttk.Treeview(win, columns=[c[0] for c in rcols], show="headings", height=7,
+                                       selectmode="browse")
+        for key, title, width, anchor in rcols:
+            self.route_tree.heading(key, text=title)
+            self.route_tree.column(key, width=width, anchor=anchor)
+        self.route_tree.pack(fill="x", padx=10, pady=4)
+        self.route_tree.bind("<<TreeviewSelect>>", lambda e: self._fill_plan_lines())
+        lcols = [("name", "Objeto", 250, "w"), ("tier", "Tier", 50, "center"), ("quality", "Calidad", 90, "w"),
+                 ("buy", "Comprar en", 100, "w"), ("sell", "Vender en", 100, "w"), ("units", "Uds.", 60, "e"),
+                 ("price", "Precio compra", 100, "e"), ("invest", "Inversión", 110, "e"),
+                 ("profit", "Beneficio", 110, "e")]
+        frame = ttk.Frame(win, padding=(10, 0, 10, 10))
+        frame.pack(fill="both", expand=True)
+        self.line_tree = ttk.Treeview(frame, columns=[c[0] for c in lcols], show="headings", selectmode="browse")
+        for key, title, width, anchor in lcols:
+            self.line_tree.heading(key, text=title)
+            self.line_tree.column(key, width=width, anchor=anchor, stretch=key == "name")
+        vs = ttk.Scrollbar(frame, orient="vertical", command=self.line_tree.yview)
+        self.line_tree.configure(yscrollcommand=vs.set)
+        self.line_tree.pack(side="left", fill="both", expand=True)
+        vs.pack(side="right", fill="y")
+        self._fill_plan()
+
+    def _fill_plan(self) -> None:
+        f = self._read_filters()
+        capital = self._num(f["capital"], 0)
+        weight = self._num(f["weight"], 0) or None
+        prof = PROFILES[f["profile"]]
+        self.route_tree.delete(*self.route_tree.get_children())
+        self.plans: Dict[str, list] = {}
+        if capital <= 0:
+            self.plan_info.set("Escribe tu dinero en «Capital» (y, si quieres, la «Carga máx.» de tu montura) "
+                               "en la ventana principal.")
+            self._fill_plan_lines()
+            return
+        w_of = self.catalog.weight
+        lines, left = plan(self.opps, capital, profile=f["profile"], max_weight=weight, weight_of=w_of)
+        rows = []
+        if lines:
+            rows.append(("__all__", "Todas las rutas mezcladas" + (" (un cargamento)" if weight else ""), lines))
+        for r in plan_routes(self.opps, capital, f["profile"], weight, w_of):
+            rows.append((f"{r.buy_city}|{r.sell_city}", f"{r.buy_city} → {r.sell_city}", r.lines))
+        for iid, label, ls in rows:
+            inv, prof_total = sum(l.invest for l in ls), sum(l.profit for l in ls)
+            self.plans[iid] = ls
+            self.route_tree.insert("", "end", iid=iid, values=(
+                label, len(ls), fmt(inv), fmt(prof_total), f"{prof_total / inv * 100:.1f} %",
+                f"{sum(l.weight for l in ls):.0f}"))
+        self.plan_info.set(
+            f"Capital: {fmt(capital)}" + (f" · Carga máx.: {weight:g} kg" if weight else "") +
+            f" · Estrategia: {STRATEGIES[f['strategy']]} · Perfil «{prof.name}»: {prof.description}\n"
+            + ("Las unidades con «~» son estimadas por las ventas diarias. Nunca se incluyen precios sospechosos. "
+               "Comprueba el precio en el juego antes de comprar." if rows else
+               "No hay oportunidades válidas para este perfil: pulsa «Actualizar precios», afloja los filtros "
+               "o elige un perfil menos estricto."))
+        if rows:
+            self.route_tree.selection_set(rows[0][0])
+        self._fill_plan_lines()
+
+    def _fill_plan_lines(self) -> None:
+        self.line_tree.delete(*self.line_tree.get_children())
+        sel = self.route_tree.selection()
+        c = self.catalog
+        for l in self.plans.get(sel[0], []) if sel else []:
+            o = l.opp
+            self.line_tree.insert("", "end", values=(
+                c.name(o.item_id), c.label(o.item_id), QUALITY_NAMES[o.quality], o.city, o.sell_city,
+                ("~" if o.estimated else "") + fmt(l.units), fmt(o.buy_price), fmt(l.invest), fmt(l.profit)))
 
     # ------------------------------------------------------------------ varios
     def _export(self) -> None:
@@ -478,11 +639,14 @@ class App:
                         f"encantamientos {', '.join(map(str, f['enchs']))}; calidades "
                         f"{', '.join(QUALITY_NAMES[q] for q in f['quals'])}; ciudades {', '.join(f['cities'])}; "
                         f"beneficio mín. {f['min_pct'] or '—'} % y {f['min_silver'] or '—'} de plata; "
-                        f"presupuesto máx. por objeto {f['max_cost'] or 'sin límite'}"
-                        + ("; solo la mejor ciudad por objeto" if f["best_only"] else ""))
+                        f"precio máx. por unidad {f['max_cost'] or 'sin límite'}"
+                        + ("; solo la mejor ruta por objeto" if f["best_only"] else "")
+                        + ("; precios sospechosos ocultos" if f["hide_susp"] else ""))
         text = build_report(self.opps, self.catalog, server=srv, premium=f["premium"], buy_mode=f["buy_mode"],
                             max_age_h=self._num(f["max_age"], 24), capital=capital, location=self.location,
-                            live_count=self.store.count_live(srv), filters_text=filters_text)
+                            live_count=self.store.count_live(srv), filters_text=filters_text,
+                            strategy=f["strategy"], profile=f["profile"],
+                            max_weight=self._num(f["weight"], 0) or None)
         try:
             path = save_report(text)
         except OSError as e:
@@ -513,16 +677,22 @@ class App:
 
     def _help(self) -> None:
         messagebox.showinfo("Cómo se usa", (
-            "1. Deja esta app abierta y juega normalmente.\n"
-            "2. En el juego, abre el Mercado Negro de Caerleon (pestaña Vender) y navega por las categorías: "
-            "la app guarda lo que paga.\n"
-            "3. Ve a otras ciudades, abre el mercado (pestaña Comprar) y navega: la app guarda los precios.\n"
-            "4. Las filas en verde usan datos leídos de tu juego. Para lo que no hayas visto, pulsa "
-            "«Actualizar precios».\n\n"
-            "Doble clic en una fila copia el nombre del objeto para pegarlo en el buscador del mercado.\n\n"
-            "«Exportar para Claude» genera un informe (copiado al portapapeles y guardado en Documentos\\AlbionBM) "
-            "para pegárselo a Claude y preguntarle en qué invertir. Rellena «Capital» para incluir un reparto.\n\n"
-            "Requisito: Npcap (https://npcap.com). La app solo escucha el tráfico; no modifica el juego."))
+            "LO RÁPIDO\n"
+            "1. Elige la estrategia (arriba a la derecha) y marca categorías, tiers y ciudades.\n"
+            "2. Pulsa «Actualizar precios»: descarga todos los mercados de golpe.\n"
+            "3. Escribe tu Capital (y la Carga de tu montura), elige un Perfil y pulsa «Plan de inversión».\n\n"
+            "ESTRATEGIAS\n"
+            "• Ciudad → Mercado Negro: solo equipo. Venta inmediata, pero hay que cruzar zona roja.\n"
+            "• Entre ciudades · venta rápida: vendes al momento a las órdenes de compra de otra ciudad.\n"
+            "• Entre ciudades · orden de venta: pones tu orden; más margen, pero tarda en venderse.\n"
+            "Las categorías Recursos, Consumibles, Monturas y Artefactos solo sirven entre ciudades.\n\n"
+            "SEÑALES\n"
+            "• ⚠ = el precio de venta supera 1,6 veces la media de la semana: suele ser un dato viejo o una trampa.\n"
+            "• «~» en Uds. = cantidad estimada por las ventas diarias. Sin «~» = leída de tu juego.\n"
+            "• Filas verdes = precios leídos de tu juego (abre el mercado con la app en marcha; requiere Npcap).\n\n"
+            "Doble clic en una fila copia el nombre del objeto. «Exportar para Claude» genera un informe para "
+            "pegárselo a Claude y preguntarle en qué invertir.\n\n"
+            "La app solo escucha el tráfico y consulta una API pública; no modifica ni automatiza el juego."))
 
     def _on_close(self) -> None:
         self.api_stop = True

@@ -33,10 +33,11 @@ class PriceStore:
                 PRIMARY KEY (server, item, quality, location, kind))"""
         )
         self._db.execute(
-            """CREATE TABLE IF NOT EXISTS volumes (
-                server TEXT, item TEXT, quality INTEGER, daily REAL, ts REAL,
-                PRIMARY KEY (server, item, quality))"""
+            """CREATE TABLE IF NOT EXISTS stats (
+                server TEXT, item TEXT, quality INTEGER, location TEXT, daily REAL, avg_price REAL, ts REAL,
+                PRIMARY KEY (server, item, quality, location))"""
         )
+        self._db.execute("DROP TABLE IF EXISTS volumes")  # tabla de la v1.2, sustituida por stats
         cols = [r[1] for r in self._db.execute("PRAGMA table_info(prices)")]
         if "book" not in cols:  # migración desde la v1.0
             self._db.execute("ALTER TABLE prices ADD COLUMN book TEXT")
@@ -82,22 +83,23 @@ class PriceStore:
             return {(r[0], r[1], r[2], r[3]): (r[4], r[5], r[6], json.loads(r[7]) if r[7] else None)
                     for r in cur}
 
-    def upsert_volumes(self, server: str, volumes: Dict[Tuple[str, int], float]) -> None:
-        """Unidades vendidas al día en el Mercado Negro por (objeto, calidad)."""
+    def upsert_stats(self, server: str, stats: Dict[Tuple[str, int, str], Tuple[float, Optional[float]]]) -> None:
+        """Historial por (objeto, calidad, ubicación): (unidades vendidas al día, precio medio 7 días)."""
         now = time.time()
         with self._lock:
             self._db.executemany(
-                "INSERT OR REPLACE INTO volumes VALUES (?,?,?,?,?)",
-                [(server, item, int(q), float(v), now) for (item, q), v in volumes.items()],
+                "INSERT OR REPLACE INTO stats VALUES (?,?,?,?,?,?,?)",
+                [(server, item, int(q), loc, float(v[0]), v[1], now) for (item, q, loc), v in stats.items()],
             )
             self._db.commit()
             self.version += 1
 
-    def load_volumes(self, server: str, max_age_days: float = 7) -> Dict[Tuple[str, int], float]:
+    def load_stats(self, server: str, max_age_days: float = 3) -> Dict[Tuple[str, int, str], Tuple[float, Optional[float]]]:
         with self._lock:
-            cur = self._db.execute("SELECT item, quality, daily FROM volumes WHERE server=? AND ts>=?",
-                                   (server, time.time() - max_age_days * 86400))
-            return {(r[0], r[1]): r[2] for r in cur}
+            cur = self._db.execute(
+                "SELECT item, quality, location, daily, avg_price FROM stats WHERE server=? AND ts>=?",
+                (server, time.time() - max_age_days * 86400))
+            return {(r[0], r[1], r[2]): (r[3], r[4]) for r in cur}
 
     def count_live(self, server: str, since_hours: float = 24) -> int:
         with self._lock:
@@ -109,7 +111,7 @@ class PriceStore:
     def clear(self) -> None:
         with self._lock:
             self._db.execute("DELETE FROM prices")
-            self._db.execute("DELETE FROM volumes")
+            self._db.execute("DELETE FROM stats")
             self._db.commit()
             self.version += 1
 

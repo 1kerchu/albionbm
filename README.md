@@ -1,11 +1,22 @@
-# Albion · Mercado Negro
+# Albion · Comercio y Mercado Negro
 
-App de escritorio para **Windows** que **lee los precios directamente del juego** mientras juegas a
-Albion Online. Compara lo que cuesta un objeto en el mercado de cada ciudad con lo que paga el
-**Mercado Negro** de Caerleon, y ordena las oportunidades por beneficio en porcentaje y en plata.
+App de escritorio para **Windows** que busca dónde ganar plata comerciando en Albion Online.
+Descarga los precios de todos los mercados con un botón (API pública de
+[Albion Online Data Project](https://www.albion-online-data.com/)) y además **lee los precios
+directamente del juego** mientras juegas. Con eso te dice qué comprar, dónde, dónde venderlo y cuánto.
 
-Las ciudades que no hayas visitado se pueden completar con la API pública de
-[Albion Online Data Project](https://www.albion-online-data.com/).
+## Qué ofrece
+
+- **Tres estrategias:** ciudad → Mercado Negro, entre ciudades con venta rápida, y entre ciudades
+  poniendo orden de venta (más margen, más lento).
+- **Más mercancías:** además del equipo, recursos, consumibles, monturas y artefactos para el
+  comercio entre ciudades.
+- **Filtro de precios trampa:** compara cada precio de venta con la media de la semana y marca con ⚠
+  los que la superan en más de 1,6 veces (datos viejos u órdenes falsas).
+- **Plan de inversión:** con tu capital, la carga de tu montura y un perfil de riesgo
+  (Máximo beneficio, Equilibrado o Seguro), propone qué comprar y la mejor ruta para un solo viaje.
+- **Avisos** cuando aparece una oportunidad nueva con tus filtros, con actualización automática.
+- **Informe para Claude** para preguntarle en qué invertir.
 
 ## Cómo lee el juego (y por qué es seguro)
 
@@ -72,6 +83,26 @@ reparto automático propuesto por la app y hasta 150 oportunidades con:
   profundidad de órdenes leída del juego;
 - peso por unidad, antigüedad de los datos y origen (juego o API).
 
+## Estrategias, plan de inversión y perfiles
+
+| Estrategia | Compras | Vendes | Para qué sirve |
+|---|---|---|---|
+| Ciudad → Mercado Negro | orden de venta más barata de una ciudad | al momento, a las órdenes de compra del Mercado Negro | Equipo. Venta inmediata, pero cruzas zona roja |
+| Entre ciudades · venta rápida | igual | al momento, a las órdenes de compra de otra ciudad | Cualquier mercancía. Dinero rápido, márgenes menores |
+| Entre ciudades · orden de venta | igual | poniendo tu orden al precio más bajo del destino (impuesto + 2,5 %) | Más margen; puede tardar o no venderse |
+
+**★ Plan de inversión** abre una ventana con el mejor cargamento para cada ruta y el detalle de qué
+comprar. Usa «Mi capital», «Carga máx. por viaje» y el perfil:
+
+| Perfil | Máx. por objeto | Parte del volumen diario | Datos | Otros |
+|---|--:|--:|---|---|
+| Máximo beneficio | 50 % | 100 % | cualquiera | concentra el capital |
+| Equilibrado | 25 % | 60 % | hasta 6 h | |
+| Seguro | 12 % | 30 % | hasta 2 h | solo objetos con ventas diarias conocidas |
+
+Ningún perfil incluye precios sospechosos (⚠). Las cantidades con «~» son estimaciones a partir de
+las ventas diarias; compruébalas en el juego antes de comprar.
+
 ## Cómo calcula el beneficio
 
 | Concepto | Fórmula |
@@ -95,10 +126,10 @@ antigüedad del precio más viejo de los dos.
 | `albionbm/capture.py` | Captura pasiva con Scapy + Npcap |
 | `albionbm/store.py` | Base de datos local de precios (SQLite) |
 | `albionbm/api.py` | Cliente de la API de Albion Online Data Project |
-| `albionbm/calc.py` | Cálculo de oportunidades, unidades disponibles y reparto del capital |
+| `albionbm/calc.py` | Estrategias, oportunidades, precios sospechosos, perfiles y plan de inversión |
 | `albionbm/export.py` | Informe en Markdown para pegárselo a Claude |
 | `albionbm/gui.py` | Ventana (Tkinter) |
-| `data/items.json` | Objetos que compra el Mercado Negro (T4–T8, nombres en español) |
+| `data/items.json` | Equipo, recursos, consumibles, monturas y artefactos (T4–T8, nombres en español) |
 | `scripts/build_items.py` | Regenera `data/items.json` cuando sale contenido nuevo |
 
 Para regenerar la lista de objetos:

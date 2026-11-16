@@ -10,7 +10,10 @@ from typing import Dict, List
 CATEGORY_NAMES = {
     "weapons": "Armas", "armors": "Armaduras", "head": "Cascos", "shoes": "Botas",
     "offhands": "Secundarias", "bags": "Bolsas", "capes": "Capas", "gathering": "Recolección",
+    # Estas no las compra el Mercado Negro: sirven para comerciar entre ciudades
+    "resources": "Recursos", "consumables": "Consumibles", "mounts": "Monturas", "artefacts": "Artefactos",
 }
+NOT_BLACK_MARKET = {"resources", "consumables", "mounts", "artefacts"}
 
 
 def _data_path() -> str:
@@ -34,7 +37,11 @@ class Catalog:
         self.by_id: Dict[str, dict] = {i["id"]: i for i in items}
 
     def base(self, item_id: str) -> dict:
-        return self.by_id.get(item_id.split("@")[0], {})
+        # Recursos y consumibles se guardan con su id completo (T4_PLANKS_LEVEL1@1); el equipo, por id base.
+        return self.by_id.get(item_id) or self.by_id.get(item_id.split("@")[0], {})
+
+    def weight(self, item_id: str) -> float:
+        return float(self.base(item_id).get("w") or 0.0)
 
     def name(self, item_id: str) -> str:
         return self.base(item_id).get("es", item_id)
@@ -66,5 +73,5 @@ class Catalog:
                 continue
             for e in it["e"]:
                 if e in enchs:
-                    out.append(f"{it['id']}@{e}" if e else it["id"])
+                    out.append(it["id"] if it.get("f") or not e else f"{it['id']}@{e}")
         return out

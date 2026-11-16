@@ -13,7 +13,7 @@ from .game import BLACK_MARKET
 
 HOSTS = {"europe": "europe.albion-online-data.com", "west": "west.albion-online-data.com",
          "east": "east.albion-online-data.com"}
-USER_AGENT = "AlbionBM/1.2 (comparador de mercado negro)"
+USER_AGENT = "AlbionBM/1.3 (comparador de mercado negro)"
 PAUSE = 0.6
 
 
@@ -109,30 +109,42 @@ def fetch_prices(server: str, ids: List[str], locations: List[str], qualities: L
                          ids, progress, should_stop)
 
 
+def fetch_history(server: str, ids: List[str], locations: List[str], qualities: List[int],
+                  progress: Optional[Callable[[int, int], None]] = None,
+                  should_stop: Optional[Callable[[], bool]] = None) -> List[dict]:
+    """Historial diario de ventas (unidades y precio medio por día) en los mercados indicados."""
+    host = HOSTS[server]
+    query = urllib.parse.urlencode({"locations": ",".join(locations), "qualities": ",".join(map(str, qualities)),
+                                    "time-scale": 24})
+    # Lotes más pequeños cuantas más ubicaciones: la respuesta trae una serie por objeto, calidad y mercado.
+    max_chars = max(300, 1800 // max(1, len(locations)))
+    return _fetch_chunks(lambda c: f"https://{host}/api/v2/stats/history/{_ids_path(c)}.json?{query}",
+                         ids, progress, should_stop, max_chars)
+
+
 def fetch_bm_history(server: str, ids: List[str], qualities: List[int],
                      progress: Optional[Callable[[int, int], None]] = None,
                      should_stop: Optional[Callable[[], bool]] = None) -> List[dict]:
-    """Historial diario de ventas en el Mercado Negro (cuántas unidades se venden al día)."""
-    host = HOSTS[server]
-    query = urllib.parse.urlencode({"locations": BLACK_MARKET, "qualities": ",".join(map(str, qualities)),
-                                    "time-scale": 24})
-    return _fetch_chunks(lambda c: f"https://{host}/api/v2/stats/history/{_ids_path(c)}.json?{query}",
-                         ids, progress, should_stop)
+    return fetch_history(server, ids, [BLACK_MARKET], qualities, progress, should_stop)
+
+
+def history_to_stats(rows: List[dict], days: int = 7, now: Optional[float] = None) -> Dict[tuple, tuple]:
+    """{(item, calidad, ubicación): (unidades vendidas al día, precio medio ponderado)} de los últimos `days` días."""
+    now = now or time.time()
+    since = now - days * 86400
+    acc: Dict[tuple, list] = {}
+    for r in rows:
+        key = (r.get("item_id"), int(r.get("quality") or 1), r.get("location") or BLACK_MARKET)
+        a = acc.setdefault(key, [0, 0.0])
+        for d in r.get("data") or []:
+            ts = parse_api_date(d.get("timestamp"))
+            n = int(d.get("item_count") or 0)
+            if ts and ts >= since and n > 0:
+                a[0] += n
+                a[1] += n * float(d.get("avg_price") or 0)
+    return {k: (n / days, (total / n if n and total else None)) for k, (n, total) in acc.items()}
 
 
 def history_to_volumes(rows: List[dict], days: int = 7, now: Optional[float] = None) -> Dict[tuple, float]:
-    """Media de unidades vendidas al día en el MN en los últimos `days` días: {(item, calidad): unidades/día}."""
-    now = now or time.time()
-    since = now - days * 86400
-    out: Dict[tuple, float] = {}
-    for r in rows:
-        if r.get("location") not in (BLACK_MARKET, None):
-            continue
-        total = 0
-        for d in r.get("data") or []:
-            ts = parse_api_date(d.get("timestamp"))
-            if ts and ts >= since:
-                total += int(d.get("item_count") or 0)
-        key = (r.get("item_id"), int(r.get("quality") or 1))
-        out[key] = out.get(key, 0.0) + total / days
-    return out
+    """Solo el volumen del Mercado Negro: {(item, calidad): unidades/día}."""
+    return {(k[0], k[1]): v[0] for k, v in history_to_stats(rows, days, now).items() if k[2] == BLACK_MARKET}

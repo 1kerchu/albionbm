@@ -37,6 +37,31 @@ for kind in KINDS:
         out.append({"id": uid, "es": es, "en": en, "c": cat, "s": sub, "t": tier, "e": levels,
                     "w": float(it.get("@weight", 0) or 0)})
 
+# Mercancías que no compra el Mercado Negro pero sirven para comerciar entre ciudades.
+EXTRA = {("simpleitem", "crafting", "refinedresources"): "resources", ("simpleitem", "crafting", "resources"): "resources",
+         ("consumableitem", "consumables", "food"): "consumables", ("consumableitem", "consumables", "potions"): "consumables"}
+extra_base = {}
+for kind in ("simpleitem", "consumableitem", "mount"):
+    for it in items.get(kind, []):
+        cat, sub = it.get("@shopcategory"), it.get("@shopsubcategory1")
+        mine = EXTRA.get((kind, cat, sub))
+        if kind == "simpleitem" and cat == "artefacts":
+            mine = "artefacts"
+        if kind == "mount" and cat == "mounts":
+            mine = "mounts"
+        uid = it["@uniquename"]
+        if mine and uid.startswith("T") and int(it.get("@tier", 0)) >= 4:
+            extra_base[uid] = (mine, sub, int(it["@tier"]), float(it.get("@weight", 0) or 0))
+for it in json.load(open(fmt, encoding="utf-8")):
+    full = it["UniqueName"]
+    b = extra_base.get(full.split("@")[0])
+    if not b or not it.get("LocalizedNames"):
+        continue
+    es, en = names[full]
+    ench = int(full.split("@")[1]) if "@" in full else 0
+    # "f": el id ya es el id completo de la API (p. ej. T4_PLANKS_LEVEL1@1)
+    out.append({"id": full, "es": es, "en": en, "c": b[0], "s": b[1], "t": b[2], "e": [ench], "w": b[3], "f": 1})
+
 out.sort(key=lambda x: (x["c"], x["s"], x["id"]))
 dst = os.path.join(os.path.dirname(__file__), "..", "data", "items.json")
 with open(dst, "w", encoding="utf-8") as f:

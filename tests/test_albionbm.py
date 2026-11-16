@@ -140,7 +140,7 @@ class DepthTests(unittest.TestCase):
         opps = {o.item_id: o for o in calc.compute(entries, ["Lymhurst", "Martlock", "Thetford"], [1], now=now)}
         self.assertEqual((opps["A"].units, opps["A"].invest), (15, 17500))
         self.assertIsNone(opps["C"].units)
-        lines, left = calc.plan(list(opps.values()), 50000)
+        lines, left = calc.plan(list(opps.values()), 50000, max_share=0.35)
         self.assertEqual([l.opp.item_id for l in lines], ["A", "B"])  # C sin cantidades no entra
         self.assertLessEqual(lines[0].invest, 50000 * 0.35)
         self.assertEqual(left, 50000 - sum(l.invest for l in lines))
@@ -156,6 +156,8 @@ class DepthTests(unittest.TestCase):
         self.assertIn("`T4_BAG`", text)
         self.assertIn("Reparto automático", text)
         self.assertIn("| 5 | 5.000 |", text)  # unidades e inversión máx.
+        self.assertIn("Mejores rutas", text)
+        self.assertIn("Lymhurst → Black Market", text)
 
 
 class VolumeTests(unittest.TestCase):
@@ -178,13 +180,22 @@ class VolumeTests(unittest.TestCase):
         lines, _ = calc.plan([o], 1_000_000)
         self.assertEqual(lines[0].units, 5)
 
-    def test_store_volumes(self):
+    def test_store_stats(self):
         with tempfile.TemporaryDirectory() as d:
             s = PriceStore(os.path.join(d, "p.db"))
-            s.upsert_volumes("europe", {("A", 1): 4.5})
-            self.assertEqual(s.load_volumes("europe"), {("A", 1): 4.5})
-            self.assertEqual(s.load_volumes("west"), {})
+            s.upsert_stats("europe", {("A", 1, "Lymhurst"): (4.5, 1200.0), ("A", 1, BLACK_MARKET): (2.0, None)})
+            self.assertEqual(s.load_stats("europe"), {("A", 1, "Lymhurst"): (4.5, 1200.0),
+                                                      ("A", 1, BLACK_MARKET): (2.0, None)})
+            self.assertEqual(s.load_stats("west"), {})
             s.close()
+
+    def test_history_to_stats_avg_price(self):
+        now = 1_800_000_000.0
+        day = lambda d: time.strftime("%Y-%m-%dT00:00:00", time.gmtime(now - d * 86400))
+        rows = [{"location": "Martlock", "item_id": "X", "quality": 2,
+                 "data": [{"item_count": 10, "avg_price": 100, "timestamp": day(1)},
+                          {"item_count": 30, "avg_price": 200, "timestamp": day(2)}]}]
+        self.assertEqual(api.history_to_stats(rows, now=now), {("X", 2, "Martlock"): (40 / 7, 175.0)})
 
     def test_fetch_uses_chunks_and_query(self):
         calls = []
@@ -201,6 +212,67 @@ class VolumeTests(unittest.TestCase):
         self.assertIn("locations=Lymhurst%2CBlack+Market", calls[0])
         self.assertIn("/stats/history/T4_BAG.json?locations=Black+Market&qualities=1&time-scale=24", calls[-1])
         self.assertEqual(hist, [{"item_id": "x"}])
+
+
+class StrategyTests(unittest.TestCase):
+    now = 1_800_000_000.0
+
+    def e(self, price, book=None):
+        return (price, self.now, "api", book)
+
+    def test_city_instant_sells_to_other_city_buy_orders(self):
+        entries = {("X", 1, "Lymhurst", "offer"): self.e(1000), ("X", 1, "Martlock", "request"): self.e(1500),
+                   ("X", 1, "Lymhurst", "request"): self.e(5000),  # misma ciudad: no cuenta
+                   ("X", 1, BLACK_MARKET, "request"): self.e(9000)}  # el MN no entra en esta estrategia
+        opps = calc.compute(entries, ["Lymhurst", "Martlock"], [1], now=self.now, strategy="city_instant")
+        self.assertEqual([(o.city, o.sell_city, o.profit) for o in opps], [("Lymhurst", "Martlock", 440)])
+
+    def test_city_order_uses_lowest_offer_and_setup_fee(self):
+        entries = {("X", 1, "Lymhurst", "offer"): self.e(1000), ("X", 1, "Martlock", "offer"): self.e(2000)}
+        opps = calc.compute(entries, ["Lymhurst", "Martlock"], [1], now=self.now, strategy="city_order")
+        good = [o for o in opps if o.profit > 0]
+        self.assertEqual(len(good), 1)
+        self.assertEqual((good[0].sell_city, good[0].revenue), ("Martlock", round(2000 * (1 - 0.04 - 0.025))))
+
+    def test_suspicious_price_flagged_and_excluded_from_plan(self):
+        entries = {("X", 1, "Lymhurst", "offer"): self.e(1000), ("X", 1, BLACK_MARKET, "request"): self.e(5000),
+                   ("Y", 1, "Lymhurst", "offer"): self.e(1000), ("Y", 1, BLACK_MARKET, "request"): self.e(1500)}
+        stats = {("X", 1, BLACK_MARKET): (10.0, 1200.0), ("Y", 1, BLACK_MARKET): (10.0, 1400.0)}
+        opps = {o.item_id: o for o in calc.compute(entries, ["Lymhurst"], [1], now=self.now, stats=stats)}
+        self.assertTrue(opps["X"].suspicious)
+        self.assertFalse(opps["Y"].suspicious)
+        self.assertEqual(opps["Y"].avg_price, 1400.0)
+        lines, _ = calc.plan(list(opps.values()), 1_000_000)
+        self.assertEqual([l.opp.item_id for l in lines], ["Y"])
+
+    def test_profiles_and_weight(self):
+        entries, stats = {}, {}
+        for i, name in enumerate("ABCDEFGHIJ"):
+            entries[(name, 1, "Lymhurst", "offer")] = self.e(1000)
+            entries[(name, 1, BLACK_MARKET, "request")] = self.e(1500 + i * 10)
+            stats[(name, 1, BLACK_MARKET)] = (100.0, 1500.0)
+        opps = calc.compute(entries, ["Lymhurst"], [1], now=self.now, stats=stats)
+        mx, _ = calc.plan(opps, 100_000, profile="max")
+        safe, _ = calc.plan(opps, 100_000, profile="safe")
+        self.assertEqual(len(mx), 2)                      # 50 % por objeto
+        self.assertTrue(all(l.invest <= 12_000 for l in safe))
+        self.assertTrue(all(l.units <= 30 for l in safe))  # 30 % del volumen diario
+        self.assertGreater(len(safe), len(mx))
+        heavy, _ = calc.plan(opps, 100_000, profile="max", max_weight=20, weight_of=lambda _i: 2.0)
+        self.assertEqual(sum(l.units for l in heavy), 10)
+        self.assertLessEqual(sum(l.weight for l in heavy), 20)
+        old = [calc.Opportunity(**{**o.__dict__, "buy_age_h": 5.0}) for o in opps]
+        self.assertEqual(calc.plan(old, 100_000, profile="safe")[0], [])  # datos de 5 h: no para «Seguro»
+
+    def test_plan_routes(self):
+        entries = {("A", 1, "Lymhurst", "offer"): self.e(1000, [[1000, 50]]),
+                   ("A", 1, "Martlock", "request"): self.e(2000, [[2000, 50]]),
+                   ("B", 1, "Thetford", "offer"): self.e(1000, [[1000, 50]]),
+                   ("B", 1, "Martlock", "request"): self.e(1200, [[1200, 50]])}
+        opps = calc.compute(entries, ["Lymhurst", "Martlock", "Thetford"], [1], now=self.now, strategy="city_instant")
+        routes = calc.plan_routes(opps, 40_000)
+        self.assertEqual([(r.buy_city, r.sell_city) for r in routes], [("Lymhurst", "Martlock"), ("Thetford", "Martlock")])
+        self.assertEqual(routes[0].lines[0].units, 20)  # 50 % de 40.000 a 1.000 por unidad
 
 
 class LocationTests(unittest.TestCase):
@@ -301,6 +373,10 @@ class CatalogTests(unittest.TestCase):
         self.assertIn("T4_BAG@1", ids)
         self.assertTrue(c.matches("T4_BAG@1", {"bags"}, {4}, {1}, "bolsa"))
         self.assertEqual(c.label("T6_BAG@3"), "T6.3")
+        # Mercancías extra: el id completo ya lleva el encantamiento
+        self.assertEqual(c.variant_ids({"resources"}, {4}, {0, 1}, "planks"), ["T4_PLANKS", "T4_PLANKS_LEVEL1@1"])
+        self.assertTrue(c.matches("T4_PLANKS_LEVEL1@1", {"resources"}, {4}, {1}, ""))
+        self.assertGreater(c.weight("T5_MOUNT_HORSE"), 0)
 
 
 if __name__ == "__main__":
