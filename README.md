@@ -110,10 +110,16 @@ la API con un botón, y cualquier precio se puede corregir a mano.
 
 | Calculadora | Qué hace |
 |---|---|
+| Comprar o fabricar | Para la cantidad que quieras y sin foco, compara comprar el objeto hecho con fabricarlo, contando que el precio sube al comprar muchas unidades. Dice a partir de cuántas unidades cambia la respuesta |
 | Fabricación | Coste de fabricar un objeto con su receta real: materiales, retorno de recursos (ciudad con bonus y foco), tasa del taller, y beneficio al venderlo. Incluye beneficio por punto de foco |
 | Refinado | Lo mismo para refinar recursos, con los retornos del refinado |
 | Venta manual | Metes precio de compra y de venta: impuestos, tasas, beneficio y precio mínimo para no perder |
 | Encantar y mejorar | Coste de subir un objeto de .0 a .1/.2/.3 con runas, almas y reliquias, frente a comprarlo ya mejorado |
+
+Subida de precio en «Comprar o fabricar»: en Windows, si has abierto ese mercado en el juego, se
+recorren las órdenes reales (precio y cantidad). Si no, y siempre en la web, se estima: la unidad
+número *k* cuesta `precio × (1 + subida × k / ventas diarias)`, con «subida» ajustable (30 % por
+defecto) y las ventas diarias sacadas del historial de la API.
 
 Retorno de recursos: `1 − 1 / (1 + bonus)`, con bonus 18 % base, +15 % en la ciudad con bonus de
 fabricación (+40 % en refinado) y +59 % con foco. Tasa del taller: valor del objeto × 0,1125 × tasa por

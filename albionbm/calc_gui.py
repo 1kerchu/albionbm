@@ -7,7 +7,7 @@ from tkinter import ttk
 from typing import Callable, Dict, List, Optional
 
 from . import calculators as K
-from .api import fetch_prices, rows_to_prices
+from .api import fetch_history, fetch_prices, history_to_stats, rows_to_prices
 from .calc import QUALITY_NAMES
 from .game import BLACK_MARKET, CITIES
 from .items import norm
@@ -115,6 +115,8 @@ class CalculatorsWindow:
         self.win.geometry("780x780")
         nb = ttk.Notebook(self.win)
         nb.pack(fill="both", expand=True, padx=8, pady=8)
+        self.boc_tab = BuyOrCraftTab(nb, self)
+        nb.add(self.boc_tab.frame, text="Comprar o fabricar")
         self.craft_tab = CraftTab(nb, self, "craft")
         self.refine_tab = CraftTab(nb, self, "refine")
         nb.add(self.craft_tab.frame, text="Fabricación")
@@ -563,3 +565,179 @@ class RankTab:
                 f"{r['profit_per_focus']:.1f}" if r["profit_per_focus"] is not None else "—"))
         self.status.set(f"{fmt(len(rows))} de {fmt(len(self.ids))} recetas tienen todos los precios. "
                         "Comprueba que el objeto se vende antes de fabricar mucho.")
+
+
+class BuyOrCraftTab:
+    """¿Sale mejor comprar el objeto hecho o fabricarlo (sin foco)? Tiene en cuenta que el precio sube
+    al comprar muchas unidades: con las órdenes leídas del juego si las hay, y si no, estimándolo."""
+
+    def __init__(self, parent, owner: CalculatorsWindow):
+        self.o, self.item, self.ready = owner, None, False
+        f = self.frame = ttk.Frame(parent, padding=10)
+        ItemPicker(f, "Objeto", lambda: [i for i in owner.app.catalog.items if i["id"] in owner.data["recipes"]],
+                   self.pick).pack(fill="x")
+        self.title = tk.StringVar(value="Elige un objeto en el buscador.")
+        ttk.Label(f, textvariable=self.title, font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(6, 4))
+        g = ttk.Frame(f)
+        g.pack(fill="x")
+        self.ench, self.qual = tk.StringVar(value="0"), tk.StringVar(value=QUALITY_NAMES[1])
+        self.qty, self.city = tk.StringVar(value="1"), tk.StringVar(value="Lymhurst")
+        self.fee, self.slip, self.bonus = tk.StringVar(value="500"), tk.StringVar(value="30"), tk.BooleanVar()
+
+        def combo(var, values, width, refetch=True):
+            cb = ttk.Combobox(g, textvariable=var, values=values, state="readonly", width=width)
+            cb.bind("<<ComboboxSelected>>", lambda e: self.changed(refetch))
+            return cb
+
+        fields = [("Encantamiento", combo(self.ench, ["0", "1", "2", "3", "4"], 4)),
+                  ("Calidad al comprarlo", combo(self.qual, list(QUALITY_NAMES.values()), 14)),
+                  ("Cuántas unidades", ttk.Entry(g, textvariable=self.qty, width=8)),
+                  ("Ciudad", combo(self.city, CITIES, 14)),
+                  ("Tasa del taller (por 100 nutrición)", ttk.Entry(g, textvariable=self.fee, width=8)),
+                  ("Subida de precio (%)", ttk.Entry(g, textvariable=self.slip, width=8))]
+        for i, (label, widget) in enumerate(fields):
+            ttk.Label(g, text=label).grid(row=i // 2, column=(i % 2) * 2, sticky="w", padx=(0, 4), pady=2)
+            widget.grid(row=i // 2, column=(i % 2) * 2 + 1, sticky="w", padx=(0, 14), pady=2)
+        ttk.Checkbutton(g, text="Ciudad con bonus para este objeto", variable=self.bonus,
+                        command=self.render).grid(row=3, column=0, columnspan=4, sticky="w")
+        ttk.Label(f, foreground="gray", wraplength=730, justify="left", text=(
+            "Sin foco. Si has abierto ese mercado en el juego con la app en marcha, se usan las órdenes reales "
+            "(precio y cantidad). Si no, «Subida de precio» estima cuánto se encarece la última unidad al comprar "
+            "lo que se vende en un día entero.")).pack(anchor="w", pady=4)
+        bar = ttk.Frame(f)
+        bar.pack(fill="x", pady=4)
+        self.btn = ttk.Button(bar, text="Buscar precios y comparar", command=self.fetch, state="disabled")
+        self.btn.pack(side="left")
+        self.status = tk.StringVar()
+        ttk.Label(bar, textvariable=self.status, foreground="gray").pack(side="left", padx=8)
+        self.out = tk.Text(f, height=22, state="disabled", relief="flat", bg="#f4f4f4", font=("Consolas", 10), wrap="word")
+        self.out.pack(fill="both", expand=True)
+        self.out.tag_configure("big", foreground="#1d7a3a", font=("Segoe UI", 14, "bold"))
+        self.out.tag_configure("warn", foreground="#b26a00")
+        self.out.tag_configure("note", foreground="gray", font=("Segoe UI", 9))
+        for v in (self.qty, self.fee, self.slip):
+            v.trace_add("write", lambda *a: self.render())
+
+    def item_id(self) -> Optional[str]:
+        if not self.item:
+            return None
+        e = int(self.ench.get() or 0)
+        return self.item["id"] if self.item.get("f") or not e else f"{self.item['id']}@{e}"
+
+    def quality(self) -> int:
+        return next(q for q, n in QUALITY_NAMES.items() if n == self.qual.get())
+
+    def pick(self, it: dict) -> None:
+        self.item, self.ready = it, False
+        self.ench.set("0")
+        self.btn.configure(state="normal")
+        self.status.set("")
+        self.render()
+
+    def changed(self, refetch: bool) -> None:
+        if refetch:
+            self.ready = False  # hacen falta otros precios
+        self.render()
+
+    def fetch(self) -> None:
+        iid = self.item_id()
+        r = self.o.data["recipes"].get(iid or "")
+        if not r:
+            self.render()
+            return
+        app, server, city = self.o.app, self.o.app.effective_server(), self.city.get()
+        ids, quals = [iid] + [m[0] for m in r["m"]], sorted({1, self.quality()})
+        self.btn.configure(state="disabled")
+        self.status.set("Buscando precios y ventas diarias…")
+
+        def job():
+            prices, stamps = rows_to_prices(fetch_prices(server, ids, [city], quals))
+            app.store.upsert(server, prices, source="api", timestamps=stamps)
+            app.store.upsert_stats(server, history_to_stats(fetch_history(server, ids, [city], quals)))
+
+        def done(_r, error):
+            if not self.o.exists():
+                return
+            self.btn.configure(state="normal")
+            self.status.set(f"Error: {error}" if error else "")
+            self.ready = not error
+            self.render()
+
+        run_async(app, job, done)
+
+    def render(self) -> None:
+        out = self.out
+        out.configure(state="normal")
+        out.delete("1.0", "end")
+        iid = self.item_id()
+        if iid:
+            cat = self.o.app.catalog
+            self.title.set(f"{cat.name(iid)} ({cat.label(iid)})")
+            r = self.o.data["recipes"].get(iid)
+            if not r:
+                out.insert("end", "Este objeto no se puede fabricar con ese encantamiento.", "warn")
+            elif not self.ready:
+                out.insert("end", "Pulsa «Buscar precios y comparar».")
+            else:
+                self._compare(iid, r)
+        out.configure(state="disabled")
+
+    def _compare(self, iid: str, r: dict) -> None:
+        out, app = self.out, self.o.app
+        server, city, q = app.effective_server(), self.city.get(), self.quality()
+        n = max(1, int(num(self.qty.get(), 1)))
+        slip = max(0.0, num(self.slip.get(), 30)) / 100
+        entries, stats = app.store.load(server, 48), app.store.load_stats(server)
+
+        def quote(item: str, quality: int, k: int):
+            e = entries.get((item, quality, city, "offer"))
+            st = stats.get((item, quality, city))
+            return K.buy_cost(k, e[0] if e else None, e[3] if e and len(e) > 3 else None, st[0] if st else None, slip)
+
+        kind = "refine" if self.item["c"] == "resources" else "craft"
+        rrr = K.return_rate(kind, self.bonus.get(), False)
+        res = K.buy_or_craft(r, self.o.data["values"], n, lambda k: quote(iid, q, k), lambda m, k: quote(m, 1, k),
+                             rrr=rrr, fee100=num(self.fee.get()))
+        c, b = res["craft"], res["buy"]
+        if c["missing"]:
+            out.insert("end", f"⚠ No hay precio en {city} de: {', '.join(self.o.name(m) for m in c['missing'])}. "
+                              "No se puede comparar.\n", "warn")
+        elif not b:
+            out.insert("end", f"⚠ No hay precio de venta de este objeto en {city}. Fabricarlo costaría "
+                              f"{fmt(c['unit_cost'])} por unidad.\n", "warn")
+        else:
+            out.insert("end", ("Mejor fabricarlo" if res["verdict"] == "craft" else "Mejor comprarlo") + "\n", "big")
+            out.insert("end", f"Ahorras {fmt(res['saving'])} en {fmt(n)} ud(s). "
+                              f"({fmt(abs(b['avg'] - c['unit_cost']))} por unidad).\n")
+        out.insert("end", "\n")
+        rows = []
+        if b:
+            best = entries.get((iid, q, city, "offer"))
+            rows += [("Comprar: orden más barata ahora", best[0] if best else None),
+                     (f"Comprar: precio medio de {fmt(n)} uds.", b["avg"]), ("Comprar: total", b["total"])]
+        if not c["missing"]:
+            rows += [("Fabricar: materiales", c["materials_total"]), ("Fabricar: tasa del taller", c["fee"]),
+                     (f"Fabricar: total ({fmt(c['units'])} uds.)", c["total"]), ("Fabricar: por unidad", c["unit_cost"])]
+        for k, v in rows:
+            out.insert("end", f"{k:<40}{fmt(v):>14}\n")
+        if not c["missing"]:
+            out.insert("end", f"\n{'Material':<34}{'A comprar':>10}{'Precio medio':>14}  Datos\n")
+            for m in c["materials"]:
+                out.insert("end", f"{self.o.name(m['id'])[:33]:<34}{fmt(m['buy']):>10}{fmt(m['avg']):>14}  "
+                                  f"{'órdenes reales' if m['exact'] else 'estimado'}\n")
+        notes = []
+        if res["switch_at"]:
+            notes.append(f"A partir de unas {fmt(res['switch_at'])} unidades sale mejor "
+                         f"{'fabricar' if res['verdict'] == 'buy' else 'comprar'}.")
+        elif res["verdict"]:
+            notes.append(f"{'Comprar' if res['verdict'] == 'buy' else 'Fabricar'} sigue saliendo mejor aunque quieras muchas más.")
+        if b:
+            notes.append("Precio del objeto: " + ("órdenes reales leídas del juego." if b["exact"] else
+                         f"{fmt(b['covered'])} uds. de órdenes reales y el resto estimado." if b["covered"] else
+                         "estimado (no has leído este mercado en el juego)."))
+        if res["verdict"] and ((b and b["no_volume"]) or c["no_volume"]):
+            notes.append("⚠ De algún objeto no hay datos de ventas diarias: ahí no se ha estimado la subida de precio.")
+        notes.append(f"Retorno de recursos usado: {rrr * 100:.1f} % (sin foco).")
+        if not self.item.get("f"):
+            notes.append("Al fabricar, la calidad sale al azar; se compara con comprarlo en la calidad elegida.")
+        out.insert("end", "\n" + "\n".join(notes), "note")

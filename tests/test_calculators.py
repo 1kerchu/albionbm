@@ -75,6 +75,47 @@ class CalculatorTests(unittest.TestCase):
         self.assertEqual(summ["Martlock"], (100, 175.0, 40 / 7))
         self.assertEqual(summ["Caerleon"], (300, None, 0))
 
+    def test_buy_cost_walks_order_book(self):
+        book = [[100, 5], [120, 5], [200, 10]]
+        q = K.buy_cost(8, 100, book)
+        self.assertEqual((q["total"], q["exact"], q["covered"]), (5 * 100 + 3 * 120, True, 8))
+        q = K.buy_cost(25, 100, book, daily=None)          # faltan 5: al último precio, sin estimar subida
+        self.assertEqual((q["total"], q["exact"], q["covered"], q["no_volume"]), (500 + 600 + 2000 + 5 * 200, False, 20, True))
+        self.assertIsNone(K.buy_cost(3, None))
+
+    def test_buy_cost_estimates_slippage_from_daily_volume(self):
+        q = K.buy_cost(100, 1000, daily=100, slip=0.30)       # un día de ventas: media casi +15 %
+        self.assertAlmostEqual(q["avg"], 1148.5)
+        self.assertEqual(K.buy_cost(1, 1000, daily=100, slip=0.30)["avg"], 1000)  # la primera, al precio visto
+        self.assertFalse(q["exact"])
+        self.assertAlmostEqual(K.buy_cost(10, 1000, daily=100, slip=0.30)["avg"], 1013.5)
+        self.assertAlmostEqual(K.buy_cost(10, 1000, daily=100, slip=0)["avg"], 1000)
+        self.assertLessEqual(K.buy_cost(10**6, 1000, daily=10, slip=0.30)["avg"], 3000)  # tope ×3
+
+    def test_buy_or_craft(self):
+        flat = lambda price: (lambda n: K.buy_cost(n, price))
+        mats = lambda m, n: K.buy_cost(n, PRICES.get(m))
+        # Fabricar: (12×100 + 20×200) × 0,75 + 288 de tasa = 4.188 por unidad
+        r = K.buy_or_craft(AXE, VALUES, 1, flat(4000), mats, rrr=0.25, fee100=500)
+        self.assertEqual(r["verdict"], "buy")
+        self.assertAlmostEqual(r["craft"]["unit_cost"], 4188)
+        self.assertEqual(K.buy_or_craft(AXE, VALUES, 1, flat(5000), mats, rrr=0.25, fee100=500)["verdict"], "craft")
+        # El objeto es barato de primeras pero sube rápido: a partir de cierta cantidad gana fabricar
+        thin = lambda n: K.buy_cost(n, 4000, daily=20, slip=0.30)
+        r = K.buy_or_craft(AXE, VALUES, 1, thin, mats, rrr=0.25, fee100=500)
+        self.assertEqual((r["verdict"], r["switch_at"]), ("buy", 10))  # 4000×(1+0,3·(n−1)/40) > 4188 con n ≥ 8
+        r = K.buy_or_craft(AXE, VALUES, 50, thin, mats, rrr=0.25, fee100=500)
+        self.assertEqual(r["verdict"], "craft")
+        self.assertAlmostEqual(r["saving"], (4000 * (1 + 0.3 * 49 / 40) - r["craft"]["unit_cost"]) * 50)
+        # Sin precio de algún material no hay veredicto
+        r = K.buy_or_craft(AXE, VALUES, 1, flat(4000), lambda m, n: None, rrr=0.25)
+        self.assertEqual((r["verdict"], r["craft"]["missing"]), (None, ["PLANKS", "BAR"]))
+
+    def test_craft_cost_buys_only_what_is_not_returned(self):
+        c = K.craft_cost({"m": AXE["m"] + [["ART", 1, 0]], "f": 0, "n": 5}, VALUES, 12, lambda m, n: K.buy_cost(n, PRICES[m]), rrr=0.25)
+        self.assertEqual((c["crafts"], c["units"]), (3, 15))
+        self.assertEqual([(m["need"], m["buy"]) for m in c["materials"]], [(36, 27), (60, 45), (3, 3)])
+
     def test_recipes_file(self):
         d = K.load_recipes()
         self.assertEqual(d["recipes"]["T4_2H_AXE@2"]["m"], [["T4_PLANKS_LEVEL2@2", 12, 1], ["T4_METALBAR_LEVEL2@2", 20, 1]])

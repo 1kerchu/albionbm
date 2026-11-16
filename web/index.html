@@ -61,6 +61,7 @@
     <section id="tab-calc" class="tab" hidden>
       <label>Calculadora
         <select id="calcKind">
+          <option value="boc">Comprar o fabricar</option>
           <option value="craft">Fabricación</option>
           <option value="refine">Refinado</option>
           <option value="trade">Venta manual</option>
@@ -69,8 +70,28 @@
         </select>
       </label>
 
+      <div id="calc-boc" class="calc">
+        <label>Objeto<input id="bSearch" type="search" placeholder="Escribe para buscar…"></label>
+        <div id="bResults" class="results"></div>
+        <p id="bItem" class="picked" hidden></p>
+        <div class="grid2">
+          <label id="bEnchWrap">Encantamiento<select id="bEnch"><option>0</option><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
+          <label>Calidad al comprarlo<select id="bQual"></select></label>
+          <label>Cuántas unidades<input id="bQty" type="text" inputmode="numeric" value="1"></label>
+          <label>Ciudad<select id="bCity"></select></label>
+          <label>Tasa del taller (por 100 nutrición)<input id="bFee" type="text" inputmode="numeric" value="500"></label>
+          <label>Subida de precio (%)<input id="bSlip" type="text" inputmode="decimal" value="30"></label>
+        </div>
+        <label class="check"><input id="bCityBonus" type="checkbox"> Ciudad con bonus para este objeto</label>
+        <p class="muted small">Sin foco. «Subida de precio» es cuánto se encarece la última unidad si compras lo que se vende en un día entero; se usa para estimar el precio al comprar muchas, porque la API solo da la orden más barata.</p>
+        <button id="bFetch" class="wide primary" disabled>Buscar precios y comparar</button>
+        <p id="bStatus" class="muted small"></p>
+        <div id="bOut" class="result"></div>
+        <div id="bMats"></div>
+      </div>
+
       <!-- Fabricación y refinado comparten formulario -->
-      <div id="calc-craft" class="calc">
+      <div id="calc-craft" class="calc" hidden>
         <label><span id="cSearchLabel">Objeto a fabricar</span><input id="cSearch" type="search" placeholder="Escribe para buscar…"></label>
         <div id="cResults" class="results"></div>
         <p id="cItem" class="picked" hidden></p>

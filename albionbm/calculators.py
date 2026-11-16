@@ -5,6 +5,7 @@ La versión web tiene el mismo código en web/calculators.js; los tests comprueb
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 from typing import Dict, List, Optional
@@ -129,4 +130,109 @@ def rank(recipes: Dict[str, dict], values: Dict[str, float], ids: List[str], buy
         if not c["missing"]:
             c["id"], c["sell_price"] = item_id, sp
             out.append(c)
+    return out
+
+
+# ---------------------------------------------------------------------------- comprar o fabricar
+
+DEFAULT_SLIP = 0.30  # cuánto sube el precio de la última unidad al comprar lo que se vende en un día
+MAX_SLIP = 2.0       # tope de la subida estimada (precio marginal como mucho ×3)
+
+
+def buy_cost(n: int, best: Optional[float], book: Optional[list] = None, daily: Optional[float] = None,
+             slip: float = DEFAULT_SLIP) -> Optional[dict]:
+    """Coste de comprar `n` unidades teniendo en cuenta que el precio sube al agotar las órdenes baratas.
+
+    - book: órdenes de venta leídas del juego, [[precio, cantidad], ...] de barata a cara. Se recorren tal cual.
+    - Lo que no cubran las órdenes (o todo, si no hay) se ESTIMA: el precio de cada unidad sube en línea recta
+      hasta +slip al comprar `daily` unidades (lo que se vende en un día). Sin `daily` no se estima subida.
+    Devuelve {"total", "avg", "exact" (todo salió de órdenes reales), "covered" (unidades de órdenes reales),
+              "no_volume" (hubo que estimar sin datos de ventas)} o None si no hay precio.
+    """
+    if n <= 0:
+        return {"total": 0.0, "avg": 0.0, "exact": True, "covered": 0, "no_volume": False}
+    total, left, last = 0.0, n, best
+    for price, amount in book or []:
+        take = min(left, amount)
+        if take > 0:
+            total += take * price
+            left -= take
+            last = price
+        if left == 0:
+            break
+    if not last:
+        return None
+    covered, no_volume = n - left, False
+    if left:
+        if daily and daily > 0:
+            # la unidad k (0, 1, 2...) cuesta last × (1 + slip·k/daily), con tope; la primera sale al precio visto
+            x_cap = MAX_SLIP * daily / slip if slip > 0 else float("inf")
+            a = min(left, x_cap)
+            total += last * (a + (slip * a * (a - 1) / (2 * daily) if slip > 0 else 0.0)) + last * (1 + MAX_SLIP) * (left - a)
+        else:
+            total += last * left
+            no_volume = True
+    return {"total": total, "avg": total / n, "exact": left == 0, "covered": covered, "no_volume": no_volume}
+
+
+def craft_cost(recipe: dict, values: Dict[str, float], units: int, quote, *, rrr: float, fee100: float = 0.0) -> dict:
+    """Coste de fabricar al menos `units` unidades comprando los materiales (con subida de precio).
+
+    quote(material, cantidad) -> resultado de buy_cost() o None si no hay precio.
+    Con el retorno de recursos, de cada material retornable solo hay que comprar la parte que no vuelve.
+    """
+    per = recipe.get("n", 1) or 1
+    crafts = math.ceil(units / per)
+    mats, total, missing, exact, no_volume, item_value = [], 0.0, [], True, False, 0.0
+    for mid, count, returnable in recipe["m"]:
+        need = count * crafts
+        to_buy = math.ceil(need * (1 - rrr)) if returnable else need
+        q = quote(mid, to_buy)
+        item_value += values.get(mid, 0.0) * count
+        if q is None:
+            missing.append(mid)
+            mats.append({"id": mid, "need": need, "buy": to_buy, "avg": None, "total": 0.0, "exact": False})
+            continue
+        total += q["total"]
+        exact = exact and q["exact"]
+        no_volume = no_volume or q["no_volume"]
+        mats.append({"id": mid, "need": need, "buy": to_buy, "avg": q["avg"], "total": q["total"], "exact": q["exact"]})
+    fee = item_value * NUTRITION_PER_VALUE * fee100 / 100 * crafts
+    made = crafts * per
+    return {"materials": mats, "materials_total": total, "fee": fee, "total": total + fee, "crafts": crafts,
+            "units": made, "unit_cost": (total + fee) / made, "missing": missing, "exact": exact, "no_volume": no_volume}
+
+
+def buy_or_craft(recipe: dict, values: Dict[str, float], units: int, quote_item, quote_mat, *, rrr: float,
+                 fee100: float = 0.0, max_scan: int = 10000) -> dict:
+    """Compara comprar `units` unidades del objeto con fabricarlas. Devuelve además a partir de qué
+    cantidad cambia la respuesta ("switch_at"), porque comprar se encarece más rápido que fabricar.
+
+    quote_item(cantidad) y quote_mat(material, cantidad) devuelven buy_cost() o None.
+    """
+    craft = craft_cost(recipe, values, units, quote_mat, rrr=rrr, fee100=fee100)
+    buy = quote_item(units)
+    out = {"units": units, "buy": buy, "craft": craft, "verdict": None, "saving": None, "switch_at": None}
+    if buy is None or craft["missing"]:
+        return out
+    buy_unit = buy["avg"]
+    out["verdict"] = "craft" if craft["unit_cost"] < buy_unit else "buy"
+    out["saving"] = abs(buy_unit - craft["unit_cost"]) * units
+
+    def better(n: int) -> Optional[str]:
+        b, c = quote_item(n), craft_cost(recipe, values, n, quote_mat, rrr=rrr, fee100=fee100)
+        if b is None or c["missing"]:
+            return None
+        return "craft" if c["unit_cost"] < b["avg"] else "buy"
+
+    # Primera cantidad mayor (en saltos 1-2-5) en la que pasa a ganar la otra opción; es aproximada
+    scale = 1
+    while scale <= max_scan:
+        for cand in (scale, scale * 2, scale * 5):
+            if units < cand <= max_scan:
+                v = better(cand)
+                if v and v != out["verdict"]:
+                    out["switch_at"] = cand
+                    return out
+        scale *= 10
     return out

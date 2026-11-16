@@ -40,3 +40,34 @@ test("mejora de encantamiento", () => {
   assert.deepStrictEqual([u.missing, u.worthIt], [["SOUL"], false]);
   assert.strictEqual(K.upgrade(STEPS, 0, 4, 1, {}, 1), null);
 });
+
+test("comprar o fabricar: subida de precio", () => {
+  const book = [[100, 5], [120, 5], [200, 10]];
+  let q = K.buyCost(8, 100, book);
+  assert.deepStrictEqual([q.total, q.exact, q.covered], [860, true, 8]);
+  q = K.buyCost(25, 100, book, null);
+  assert.deepStrictEqual([q.total, q.exact, q.covered, q.noVolume], [4100, false, 20, true]);
+  assert.strictEqual(K.buyCost(3, null), null);
+  near(K.buyCost(100, 1000, null, 100, 0.30).avg, 1148.5);
+  assert.strictEqual(K.buyCost(1, 1000, null, 100, 0.30).avg, 1000);
+  near(K.buyCost(10, 1000, null, 100, 0.30).avg, 1013.5);
+  assert.ok(K.buyCost(1e6, 1000, null, 10, 0.30).avg <= 3000);
+});
+
+test("comprar o fabricar: veredicto y cambio", () => {
+  const flat = (price) => (n) => K.buyCost(n, price);
+  const mats = (m, n) => K.buyCost(n, PRICES[m]);
+  const o = { rrr: 0.25, fee100: 500 };
+  let r = K.buyOrCraft(AXE, VALUES, 1, flat(4000), mats, o);
+  assert.strictEqual(r.verdict, "buy"); near(r.craft.unitCost, 4188);
+  assert.strictEqual(K.buyOrCraft(AXE, VALUES, 1, flat(5000), mats, o).verdict, "craft");
+  const thin = (n) => K.buyCost(n, 4000, null, 20, 0.30);
+  r = K.buyOrCraft(AXE, VALUES, 1, thin, mats, o);
+  assert.deepStrictEqual([r.verdict, r.switchAt], ["buy", 10]);
+  r = K.buyOrCraft(AXE, VALUES, 50, thin, mats, o);
+  assert.strictEqual(r.verdict, "craft"); near(r.saving, (4000 * (1 + 0.3 * 49 / 40) - r.craft.unitCost) * 50);
+  r = K.buyOrCraft(AXE, VALUES, 1, flat(4000), () => null, { rrr: 0.25 });
+  assert.deepStrictEqual([r.verdict, r.craft.missing], [null, ["PLANKS", "BAR"]]);
+  const c = K.craftCost({ m: AXE.m.concat([["ART", 1, 0]]), f: 0, n: 5 }, VALUES, 12, (m, n) => K.buyCost(n, PRICES[m]), { rrr: 0.25 });
+  assert.deepStrictEqual([c.crafts, c.units, c.materials.map((m) => [m.need, m.buy])], [3, 15, [[36, 27], [60, 45], [3, 3]]]);
+});

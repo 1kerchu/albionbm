@@ -7,7 +7,7 @@
   const EQUIP = new Set(["weapons", "armors", "head", "shoes", "offhands", "bags", "capes", "gathering"]);
 
   let data = null;            // recipes.json
-  let kind = "craft";         // craft | refine | trade | upgrade
+  let kind = "boc";           // boc | craft | refine | trade | upgrade | rank
   let craftItem = null, upItem = null;   // objeto elegido del catálogo
   let matPrices = {}, upPrices = {};     // precios editables
 
@@ -208,6 +208,76 @@
        <dt>Comprarlo ya mejorado</dt><dd>${u.direct ? fmt(u.direct) : "—"}</dd></dl>`;
   }
 
+  // ------------------------------------------------------------ comprar o fabricar
+  let bocItem = null, bocReady = false;
+  const bocStats = new Map();   // "item|calidad|ciudad" -> { daily, avg } (ventas diarias, del historial)
+  const bocId = () => (bocItem ? (bocItem.f || !Number($("bEnch").value) ? bocItem.id : `${bocItem.id}@${$("bEnch").value}`) : null);
+
+  function pickBoc(it) {
+    bocItem = it; bocReady = false;
+    $("bItem").hidden = false; $("bEnchWrap").hidden = !!it.f; $("bEnch").value = "0";
+    $("bFetch").disabled = false; $("bStatus").textContent = "";
+    renderBoc();
+  }
+
+  async function runBoc() {
+    const id = bocId(), r = data.recipes[id];
+    if (!r) { renderBoc(); return; }
+    const f = A.readForm(), city = $("bCity").value, q = Number($("bQual").value);
+    const ids = [id, ...r.m.map((m) => m[0])], quals = [...new Set([1, q])];
+    $("bFetch").disabled = true;
+    const ok = await fetchPrices(ids, [city], quals, "bStatus");
+    if (ok) {
+      $("bStatus").textContent = "Buscando cuánto se vende al día…";
+      try {
+        C.mergeHistory(bocStats, await A.getJson(`https://${f.server}.albion-online-data.com/api/v2/stats/history/` +
+          `${ids.map(encodeURIComponent).join(",")}.json?locations=${encodeURIComponent(city)}&qualities=${quals.join(",")}&time-scale=24`) || []);
+        $("bStatus").textContent = "";
+      } catch (e) { $("bStatus").textContent = "No se pudo descargar el historial de ventas: la subida de precio no se estima."; }
+      bocReady = true;
+    }
+    $("bFetch").disabled = false;
+    renderBoc();
+  }
+
+  function renderBoc() {
+    $("bMats").innerHTML = "";
+    if (!bocItem) { $("bOut").innerHTML = ""; return; }
+    const id = bocId(), r = data.recipes[id];
+    $("bItem").textContent = `${A.itemName(id)} (${A.itemLabel(id)})`;
+    if (!r) { $("bOut").innerHTML = '<span class="warn">Este objeto no se puede fabricar con ese encantamiento.</span>'; return; }
+    if (!bocReady) { $("bOut").innerHTML = '<div class="muted">Pulsa «Buscar precios y comparar».</div>'; return; }
+    const city = $("bCity").value, q = Number($("bQual").value), n = Math.max(1, Math.floor(num($("bQty").value, 1)));
+    const slip = Math.max(0, num($("bSlip").value, 30)) / 100;
+    const daily = (item, ql) => { const s = bocStats.get([item, ql, city].join("|")); return s ? s.daily : null; };
+    const quoteItem = (k) => K.buyCost(k, price(id, city, "offer", q), null, daily(id, q), slip);
+    const quoteMat = (m, k) => K.buyCost(k, price(m, city, "offer"), null, daily(m, 1), slip);
+    const rrr = K.returnRate(bocItem.c === "resources" ? "refine" : "craft", $("bCityBonus").checked, false);
+    const res = K.buyOrCraft(r, data.values, n, quoteItem, quoteMat, { rrr, fee100: num($("bFee").value, 0) });
+    const c = res.craft, b = res.buy, best = price(id, city, "offer", q);
+    let head;
+    if (c.missing.length) head = `<div class="warn">⚠ La API no tiene precio en ${esc(city)} de: ${c.missing.map((m) => esc(matName(m))).join(", ")}. No se puede comparar.</div>`;
+    else if (!b) head = `<div class="warn">⚠ La API no tiene precio de venta de este objeto en ${esc(city)}. Fabricarlo costaría ${fmt(c.unitCost)} por unidad.</div>`;
+    else head = `<div class="big good">${res.verdict === "craft" ? "Mejor fabricarlo" : "Mejor comprarlo"}</div>
+      <div>Ahorras ${fmt(res.saving)} en ${fmt(n)} ud${n > 1 ? "s." : "."} (${fmt(Math.abs(b.avg - c.unitCost))} por unidad).</div>`;
+    const rows = [];
+    if (b) rows.push(["Comprar: orden más barata ahora", fmt(best)], [`Comprar: precio medio de ${fmt(n)} uds.`, fmt(b.avg)], ["Comprar: total", fmt(b.total)]);
+    if (!c.missing.length) rows.push(["Fabricar: materiales", fmt(c.materialsTotal)], ["Fabricar: tasa del taller", fmt(c.fee)],
+      [`Fabricar: total (${fmt(c.units)} uds.)`, fmt(c.total)], ["Fabricar: por unidad", fmt(c.unitCost)]);
+    const notes = [];
+    if (res.switchAt) notes.push(`A partir de unas ${fmt(res.switchAt)} unidades sale mejor ${res.verdict === "buy" ? "fabricar" : "comprar"}.`);
+    else if (res.verdict) notes.push(`${res.verdict === "buy" ? "Comprar" : "Fabricar"} sigue saliendo mejor aunque quieras muchas más.`);
+    if (res.verdict && ((b && b.noVolume) || c.noVolume)) notes.push("⚠ De algún objeto no hay datos de ventas diarias: ahí no se ha podido estimar la subida de precio.");
+    notes.push(`Retorno de recursos usado: ${pct(rrr * 100)} (sin foco). La subida de precio es una estimación: confírmala en el juego si vas a comprar muchas.`);
+    if (!bocItem.f) notes.push("Al fabricar, la calidad sale al azar; se compara con comprarlo en la calidad elegida.");
+    $("bOut").innerHTML = head + "<dl>" + rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("") + "</dl>" +
+      notes.map((t) => `<p class="muted small">${esc(t)}</p>`).join("");
+    if (!c.missing.length) {
+      $("bMats").innerHTML = `<table class="mats"><thead><tr><th>Material</th><th>A comprar</th><th>Precio medio</th></tr></thead><tbody>` +
+        c.materials.map((m) => `<tr><td>${esc(matName(m.id))}</td><td>${fmt(m.buy)}</td><td>${fmt(m.avg)}</td></tr>`).join("") + "</tbody></table>";
+    }
+  }
+
   // ------------------------------------------------------------ ranking de fabricación
   let rankIds = null;
   const RANK_CATS = { equip: [...EQUIP], consumables: ["consumables"], refine: ["resources"] };
@@ -256,6 +326,7 @@
   // ------------------------------------------------------------ arranque
   function showKind() {
     kind = $("calcKind").value;
+    $("calc-boc").hidden = kind !== "boc";
     $("calc-craft").hidden = !(kind === "craft" || kind === "refine");
     $("calc-trade").hidden = kind !== "trade";
     $("calc-upgrade").hidden = kind !== "upgrade";
@@ -266,6 +337,7 @@
       $("cItem").hidden = true; $("cFetch").disabled = true; $("cStatus").textContent = ""; $("cSellPrice").value = ""; $("cMats").dataset.sig = ""; $("cEnchWrap").hidden = kind === "refine";
       updateRrr(); renderCraft();
     }
+    if (kind === "boc") renderBoc();
     if (kind === "trade") renderTrade();
     if (kind === "upgrade") renderUp();
   }
@@ -276,7 +348,8 @@
     ready = true;
     const opt = (v, l) => `<option value="${esc(v)}">${esc(l)}</option>`;
     const cities = C.CITIES.map((c) => opt(c, c)).join("");
-    $("cBuy").innerHTML = cities; $("uCity").innerHTML = cities; $("rBuy").innerHTML = cities;
+    $("cBuy").innerHTML = cities; $("uCity").innerHTML = cities; $("rBuy").innerHTML = cities; $("bCity").innerHTML = cities;
+    $("bCity").value = "Lymhurst";
     $("cSell").innerHTML = cities + opt(C.BLACK_MARKET, "Mercado Negro"); $("rSell").innerHTML = $("cSell").innerHTML;
     $("rBuy").value = "Lymhurst"; $("rSell").value = "Lymhurst";
     $("uQual").innerHTML = Object.entries(C.QUALITY_NAMES).map(([q, n]) => opt(q, n)).join("");
@@ -327,6 +400,14 @@
       await fetchPrices([upId(from), upId(to), ...steps.slice(from, to).map((s) => s[0])], [$("uCity").value],
         [...new Set([1, Number($("uQual").value)])], "uStatus");
       fillUpFromStore(); renderUp();
+    });
+    $("bQual").innerHTML = $("uQual").innerHTML;
+    setupSearch("bSearch", "bResults", (it) => data.recipes[it.id] !== undefined, pickBoc);
+    $("bFetch").addEventListener("click", runBoc);
+    $("calc-boc").addEventListener("input", (e) => { if (["bQty", "bFee", "bSlip"].includes(e.target.id)) renderBoc(); });
+    $("calc-boc").addEventListener("change", (e) => {
+      if (["bEnch", "bQual", "bCity"].includes(e.target.id)) bocReady = false;  // hacen falta otros precios
+      renderBoc();
     });
     $("rRun").addEventListener("click", runRank);
     $("calc-rank").addEventListener("change", (e) => {

@@ -1,2 +1,2 @@
 """Albion BM: oportunidades de comercio en Albion Online leyendo el juego y la API pública."""
-__version__ = "1.5.1"
+__version__ = "1.6.0"
