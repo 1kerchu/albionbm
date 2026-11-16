@@ -19,7 +19,7 @@
     server: "europe", strategy: "bm", premium: true, buyOrder: false, bestOnly: true, hideSusp: true,
     minPct: "10", minSilver: "5000", maxCost: "", maxAge: "6", capital: "", weight: "", profile: "balanced",
     cats: ["weapons", "armors", "head", "shoes", "offhands", "bags", "capes"],
-    tiers: [4, 5, 6], enchs: [0, 1], quals: [1, 2, 3], cities: C.CITIES.slice(), sort: "percent",
+    tiers: [4, 5, 6], enchs: [0, 1], quals: [1, 2, 3], cities: C.CITIES.filter((c) => c !== "Brecilien"), sort: "percent",
   };
   const STORE_KEY = "albionbm.web.v1";
   const PAUSE_MS = 600, MAX_CARDS = 150, MAX_HISTORY_ITEMS = 1000;

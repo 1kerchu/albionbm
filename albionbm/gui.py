@@ -31,7 +31,7 @@ DEFAULTS = {
     "min_pct": "10", "min_silver": "5000", "max_cost": "", "max_age": "6", "search": "", "capital": "", "auto": False, "auto_min": "15",
     "strategy": "bm", "hide_susp": True, "weight": "", "profile": "balanced", "alert": False,
     "cats": ["weapons", "armors", "head", "shoes", "offhands", "bags", "capes"],
-    "tiers": [4, 5, 6], "enchs": [0, 1], "quals": [1, 2, 3], "cities": list(CITIES),
+    "tiers": [4, 5, 6], "enchs": [0, 1], "quals": [1, 2, 3], "cities": [c for c in CITIES if c != "Brecilien"],
 }
 
 
