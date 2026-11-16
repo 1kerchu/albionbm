@@ -52,6 +52,29 @@ class CalculatorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             K.upgrade(STEPS, 0, 4, 1, {}, 1)
 
+    def test_rank(self):
+        recipes = {"AXE": AXE, "NOPRICE": AXE, "NOMAT": {"m": [["X", 1, 1]], "f": 1, "n": 1}}
+        rows = K.rank(recipes, VALUES, ["AXE", "NOPRICE", "NOMAT", "UNKNOWN"], lambda m: PRICES.get(m, 0),
+                      lambda i: {"AXE": 6000, "NOMAT": 50}.get(i, 0), rrr=0.25, fee100=500)
+        self.assertEqual([r["id"] for r in rows], ["AXE"])
+        self.assertAlmostEqual(rows[0]["unit_profit"], 1422)
+
+    def test_history_series(self):
+        import time
+        from albionbm.api import history_series, week_summary
+        now = 1_800_000_000.0
+        day = lambda d: time.strftime("%Y-%m-%dT00:00:00", time.gmtime(now - d * 86400))
+        rows = [{"location": "Martlock", "item_id": "X", "quality": 1, "data": [
+                    {"item_count": 10, "avg_price": 100, "timestamp": day(1)}, {"item_count": 30, "avg_price": 200, "timestamp": day(2)},
+                    {"item_count": 5, "avg_price": 999, "timestamp": day(40)}, {"item_count": 0, "avg_price": 50, "timestamp": day(3)}]},
+                {"location": "Caerleon", "item_id": "X", "quality": 1, "data": [{"item_count": 7, "avg_price": 300, "timestamp": day(10)}]}]
+        s = history_series(rows, now=now)
+        self.assertEqual([x["city"] for x in s], ["Caerleon", "Martlock"])
+        self.assertEqual(len(s[1]["points"]), 2)
+        summ = {c: (last, avg, vol) for c, last, avg, vol in week_summary(s)}
+        self.assertEqual(summ["Martlock"], (100, 175.0, 40 / 7))
+        self.assertEqual(summ["Caerleon"], (300, None, 0))
+
     def test_recipes_file(self):
         d = K.load_recipes()
         self.assertEqual(d["recipes"]["T4_2H_AXE@2"]["m"], [["T4_PLANKS_LEVEL2@2", 12, 1], ["T4_METALBAR_LEVEL2@2", 20, 1]])

@@ -148,3 +148,32 @@ def history_to_stats(rows: List[dict], days: int = 7, now: Optional[float] = Non
 def history_to_volumes(rows: List[dict], days: int = 7, now: Optional[float] = None) -> Dict[tuple, float]:
     """Solo el volumen del Mercado Negro: {(item, calidad): unidades/día}."""
     return {(k[0], k[1]): v[0] for k, v in history_to_stats(rows, days, now).items() if k[2] == BLACK_MARKET}
+
+
+def history_series(rows: List[dict], days: int = 28, now: Optional[float] = None) -> List[dict]:
+    """Historial para la gráfica: [{"city", "points": [(día, precio medio, unidades)]}], en el orden fijo de ciudades."""
+    now = now or time.time()
+    since = now - days * 86400
+    order = ["Caerleon", "Bridgewatch", "Martlock", "Lymhurst", "Fort Sterling", "Thetford", "Brecilien", BLACK_MARKET]
+    out = []
+    for r in rows:
+        pts = []
+        for d in r.get("data") or []:
+            ts = parse_api_date(d.get("timestamp"))
+            n, price = int(d.get("item_count") or 0), float(d.get("avg_price") or 0)
+            if ts and ts >= since and n > 0 and price > 0:
+                pts.append((int(ts // 86400), price, n))
+        if pts and r.get("location") in order:
+            out.append({"city": r["location"], "points": sorted(pts)})
+    return sorted(out, key=lambda s: order.index(s["city"]))
+
+
+def week_summary(series: List[dict]) -> List[tuple]:
+    """Por ciudad: (ciudad, último precio, media ponderada de 7 días, ventas/día)."""
+    last_day = max(p[0] for s in series for p in s["points"])
+    out = []
+    for s in series:
+        week = [p for p in s["points"] if p[0] > last_day - 7]
+        n = sum(p[2] for p in week)
+        out.append((s["city"], s["points"][-1][1], (sum(p[1] * p[2] for p in week) / n) if n else None, n / 7))
+    return out

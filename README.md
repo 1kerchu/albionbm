@@ -119,6 +119,20 @@ Retorno de recursos: `1 − 1 / (1 + bonus)`, con bonus 18 % base, +15 % en la c
 fabricación (+40 % en refinado) y +59 % con foco. Tasa del taller: valor del objeto × 0,1125 × tasa por
 100 de nutrición / 100. Las recetas salen de `data/recipes.json` (`scripts/build_recipes.py`).
 
+## Favoritos, historial y ganancias
+
+Botón **☆ Favoritos · Historial · Ganancias** en Windows y pestaña **Más** en la web.
+
+- **Favoritos y avisos de precio:** objetos seguidos con un precio objetivo («avísame si baja de» o
+  «si sube de»). Se comprueban a mano o cada 10 minutos mientras la app esté abierta.
+- **Historial de precios:** gráfica del precio medio diario por ciudad en los últimos 28 días, con
+  el último precio, la media de 7 días y las ventas al día.
+- **Registro de ganancias:** apuntas tus operaciones y calcula el beneficio con impuestos. Totales de
+  hoy, 7 días y total; se exporta a CSV.
+
+La pestaña **Ranking** de las Calculadoras repasa todas las recetas y ordena qué da más beneficio al
+fabricar o refinar. En Windows, favoritos y ganancias se guardan en `%APPDATA%\AlbionBM\`.
+
 ## Versión web (móvil)
 
 En `web/`, publicada con GitHub Pages. Usa solo la API (no lee el juego) y guarda tus datos en el

@@ -111,3 +111,22 @@ def upgrade(steps: List[list], from_level: int, to_level: int, base_price: Optio
     saving = (target_price - total) if target_price else None
     return {"steps": rows, "upgrade_cost": cost, "total": total, "direct": target_price, "saving": saving,
             "missing": missing, "worth_it": bool(saving is not None and saving > 0 and not missing)}
+
+
+def rank(recipes: Dict[str, dict], values: Dict[str, float], ids: List[str], buy_price, sell_price, **opts) -> List[dict]:
+    """Ranking de qué fabricar: calcula todas las recetas de `ids` y devuelve las que tienen todos los precios.
+
+    buy_price(material) y sell_price(objeto) devuelven el precio o 0 si no se conoce.
+    opts: los mismos de craft() (rrr, fee100, premium, sell_order).
+    """
+    out = []
+    for item_id in ids:
+        r = recipes.get(item_id)
+        sp = sell_price(item_id) if r else 0
+        if not r or not sp:
+            continue
+        c = craft(r, values, {m[0]: buy_price(m[0]) for m in r["m"]}, sp, **opts)
+        if not c["missing"]:
+            c["id"], c["sell_price"] = item_id, sp
+            out.append(c)
+    return out

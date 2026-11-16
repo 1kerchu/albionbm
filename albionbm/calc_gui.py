@@ -27,6 +27,19 @@ def num(s: str, default: float = 0.0) -> float:
         return default
 
 
+def run_async(app, job: Callable[[], object], done: Callable[[object, Optional[Exception]], None]) -> None:
+    """Ejecuta `job` en segundo plano y entrega el resultado en el hilo de la interfaz
+    (Tkinter no es seguro entre hilos: se pasa por la cola de la ventana principal)."""
+    def work():
+        try:
+            result, error = job(), None
+        except Exception as e:  # se muestra al usuario en `done`
+            result, error = None, e
+        app.events.put(("call", lambda: done(result, error)))
+
+    threading.Thread(target=work, daemon=True).start()
+
+
 class ItemPicker(ttk.Frame):
     """Buscador: escribes, eliges en la lista."""
 
@@ -108,6 +121,8 @@ class CalculatorsWindow:
         nb.add(self.refine_tab.frame, text="Refinado")
         nb.add(TradeTab(nb, self).frame, text="Venta manual")
         nb.add(UpgradeTab(nb, self).frame, text="Encantar y mejorar")
+        self.rank_tab = RankTab(nb, self)
+        nb.add(self.rank_tab.frame, text="Ranking")
 
     def exists(self) -> bool:
         return bool(self.win.winfo_exists())
@@ -432,3 +447,119 @@ class UpgradeTab:
                                  ("Comprarlo ya mejorado", u["direct"])]:
                         self.out.insert("end", f"{k:<34}{fmt(v):>14}\n")
         self.out.configure(state="disabled")
+
+
+class RankTab:
+    """Ranking: qué fabricar o refinar da más beneficio, repasando todas las recetas."""
+
+    TYPES = {"Fabricar equipo": (EQUIP, "craft"), "Fabricar consumibles": ({"consumables"}, "craft"),
+             "Refinar recursos": ({"resources"}, "refine")}
+    SORTS = {"Mayor %": "percent", "Mayor beneficio/ud.": "unit_profit", "Mayor beneficio por foco": "profit_per_focus"}
+
+    def __init__(self, parent, owner: CalculatorsWindow):
+        self.o, self.ids = owner, None
+        f = self.frame = ttk.Frame(parent, padding=10)
+        g = ttk.Frame(f)
+        g.pack(fill="x")
+        self.type = tk.StringVar(value="Fabricar equipo")
+        self.sort = tk.StringVar(value="Mayor %")
+        self.buy, self.sell = tk.StringVar(value="Lymhurst"), tk.StringVar(value="Lymhurst")
+        self.mode = tk.StringVar(value="Orden de venta")
+        self.city, self.focus, self.fee = tk.BooleanVar(), tk.BooleanVar(), tk.StringVar(value="500")
+        for i, (label, var, values, reset) in enumerate([
+                ("Qué", self.type, list(self.TYPES), True), ("Ordenar por", self.sort, list(self.SORTS), False),
+                ("Comprar materiales en", self.buy, CITIES, True), ("Vender en", self.sell, CITIES + [BM_LABEL], True),
+                ("Forma de venta", self.mode, ["Orden de venta", "Venta rápida"], False)]):
+            ttk.Label(g, text=label).grid(row=i // 2, column=(i % 2) * 2, sticky="w", padx=(0, 4), pady=2)
+            cb = ttk.Combobox(g, textvariable=var, values=values, state="readonly", width=24)
+            cb.grid(row=i // 2, column=(i % 2) * 2 + 1, sticky="w", padx=(0, 14))
+            cb.bind("<<ComboboxSelected>>", (lambda e: self.reset()) if reset else (lambda e: self.render()))
+        ttk.Label(g, text="Tasa del taller (por 100 nutrición)").grid(row=2, column=2, sticky="w")
+        ttk.Entry(g, textvariable=self.fee, width=8).grid(row=2, column=3, sticky="w")
+        self.fee.trace_add("write", lambda *a: self.render())
+        ttk.Checkbutton(g, text="Ciudad con bonus", variable=self.city, command=self.render).grid(row=3, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(g, text="Usar foco", variable=self.focus, command=self.render).grid(row=3, column=2, columnspan=2, sticky="w")
+        ttk.Label(f, foreground="gray", wraplength=720, justify="left", text=(
+            "Usa los tiers y encantamientos marcados en la ventana principal. Precios de calidad Normal. El bonus de "
+            "ciudad se aplica a todo por igual: en el juego cada ciudad solo lo da a ciertos objetos.")).pack(anchor="w", pady=4)
+        bar = ttk.Frame(f)
+        bar.pack(fill="x", pady=4)
+        self.btn = ttk.Button(bar, text="Calcular ranking", command=self.run)
+        self.btn.pack(side="left")
+        self.status = tk.StringVar()
+        ttk.Label(bar, textvariable=self.status, foreground="gray").pack(side="left", padx=8)
+        cols = [("name", "Objeto", 250, "w"), ("tier", "Tier", 50, "center"), ("cost", "Coste/ud.", 85, "e"),
+                ("sell", "Venta", 85, "e"), ("profit", "Benef./ud.", 85, "e"), ("pct", "%", 65, "e"),
+                ("focus", "Foco", 60, "e"), ("ppf", "Benef./foco", 80, "e")]
+        box = ttk.Frame(f)
+        box.pack(fill="both", expand=True)
+        self.tree = ttk.Treeview(box, columns=[c[0] for c in cols], show="headings")
+        for key, title, width, anchor in cols:
+            self.tree.heading(key, text=title)
+            self.tree.column(key, width=width, anchor=anchor, stretch=key == "name")
+        vs = ttk.Scrollbar(box, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vs.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        vs.pack(side="right", fill="y")
+
+    def sell_loc(self) -> str:
+        return BLACK_MARKET if self.sell.get() == BM_LABEL else self.sell.get()
+
+    def reset(self) -> None:
+        self.ids = None
+        self.tree.delete(*self.tree.get_children())
+        self.status.set("")
+
+    def run(self) -> None:
+        f = self.o.app._read_filters()
+        cats, _ = self.TYPES[self.type.get()]
+        recipes = self.o.data["recipes"]
+        ids = [i for i in self.o.app.catalog.variant_ids(cats, f["tiers"], f["enchs"]) if i in recipes]
+        if not ids:
+            self.status.set("No hay recetas con los tiers y encantamientos marcados.")
+            return
+        mats = sorted({m[0] for i in ids for m in recipes[i]["m"]})
+        self.btn.configure(state="disabled")
+        self.status.set(f"Descargando precios de {fmt(len(ids))} objetos y {fmt(len(mats))} materiales…")
+        server, buy, sell = self.o.app.effective_server(), self.buy.get(), self.sell_loc()
+
+        def job():
+            for group, loc in ((ids, sell), (mats, buy)):
+                prices, stamps = rows_to_prices(fetch_prices(server, group, [loc], [1]))
+                self.o.app.store.upsert(server, prices, source="api", timestamps=stamps)
+
+        def done(_result, error):
+            if not self.o.exists():
+                return
+            self.btn.configure(state="normal")
+            if error:
+                self.status.set(f"Error: {error}")
+            else:
+                self.ids = ids
+                self.render()
+
+        run_async(self.o.app, job, done)
+
+    def render(self) -> None:
+        if not self.ids:
+            return
+        entries = self.o._entries()  # una sola lectura del almacén para todo el ranking
+        buy, sell = self.buy.get(), self.sell_loc()
+        instant = self.mode.get() == "Venta rápida" or sell == BLACK_MARKET
+        price = lambda i, loc, kind: float((entries.get((i, 1, loc, kind)) or (0,))[0])
+        kind = self.TYPES[self.type.get()][1]
+        rows = K.rank(self.o.data["recipes"], self.o.data["values"], self.ids,
+                      lambda m: price(m, buy, "offer"), lambda i: price(i, sell, "request" if instant else "offer"),
+                      rrr=K.return_rate(kind, self.city.get(), self.focus.get()), fee100=num(self.fee.get()),
+                      premium=self.o.premium(), sell_order=not instant)
+        key = self.SORTS[self.sort.get()]
+        rows.sort(key=lambda r: -(r[key] if r[key] is not None else float("-inf")))
+        self.tree.delete(*self.tree.get_children())
+        cat = self.o.app.catalog
+        for r in rows[:300]:
+            self.tree.insert("", "end", values=(
+                cat.name(r["id"]), cat.label(r["id"]), fmt(r["unit_cost"]), fmt(r["sell_price"]), fmt(r["unit_profit"]),
+                f"{r['percent']:.1f} %", fmt(r["focus"]),
+                f"{r['profit_per_focus']:.1f}" if r["profit_per_focus"] is not None else "—"))
+        self.status.set(f"{fmt(len(rows))} de {fmt(len(self.ids))} recetas tienen todos los precios. "
+                        "Comprueba que el objeto se vende antes de fabricar mucho.")
