@@ -52,6 +52,10 @@
         <label>Carga máx. (kg)<input id="weight" type="text" inputmode="numeric" placeholder="opcional"></label>
       </div>
       <label>Perfil de riesgo<select id="profile"></select></label>
+      <div class="grid2">
+        <label>Riesgo de perder la carga en zona roja (%)<input id="risk" type="text" inputmode="decimal" placeholder="0"></label>
+        <label>Máx. por viaje en zona roja<input id="maxRisk" type="text" inputmode="numeric" placeholder="sin límite"></label>
+      </div>
       <p id="profileDesc" class="muted small"></p>
       <button id="export" class="wide">Copiar informe para Claude</button>
       <div id="routes" class="cards"></div>
@@ -177,6 +181,7 @@
           <option value="favs">Favoritos y avisos de precio</option>
           <option value="hist">Historial de precios</option>
           <option value="ledger">Registro de ganancias</option>
+          <option value="sell">Dónde vender lo que tengo</option>
         </select>
       </label>
 
@@ -201,6 +206,22 @@
         <p id="hStatus" class="muted small"></p>
         <div id="hChart"></div>
         <div id="hTable"></div>
+      </div>
+
+      <div id="more-sell" hidden>
+        <label>Añadir objeto<input id="sSearch" type="search" placeholder="Escribe para buscar…"></label>
+        <div id="sResults" class="results"></div>
+        <div class="grid2">
+          <label>Encantamiento<select id="sEnch"><option>0</option><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
+          <label>Calidad<select id="sQual"></select></label>
+          <label>Cantidad<input id="sQty" type="text" inputmode="numeric" value="1"></label>
+        </div>
+        <p class="muted small">Elige encantamiento, calidad y cantidad, y luego busca el objeto.</p>
+        <button id="sCheck" class="wide primary">Buscar precios y comparar</button>
+        <p id="sStatus" class="muted small"></p>
+        <div id="sTotal" class="result"></div>
+        <div id="sList" class="cards"></div>
+        <p class="muted small">«Venta rápida» = vender ya a la mejor orden de compra que acepte tu calidad. «Orden de venta» = poner tu orden igualando la más barata (tarda y paga un 2,5 % más). Neto = tras impuestos. Usa las ciudades de Ajustes y el Mercado Negro si es equipo.</p>
       </div>
 
       <div id="more-ledger" hidden>

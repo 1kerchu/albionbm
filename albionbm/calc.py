@@ -193,6 +193,27 @@ PROFILES: Dict[str, Profile] = {
 }
 
 
+# ---------------------------------------------------------------------------- riesgo del transporte
+
+# Llegar a Caerleon (y a su Mercado Negro) o a Brecilien obliga a cruzar zona roja o la niebla.
+RISKY_PLACES = {"Caerleon", BLACK_MARKET, "Brecilien"}
+SAME_CITY = {"Caerleon", BLACK_MARKET}  # el Mercado Negro está dentro de Caerleon
+
+
+def route_risky(buy_city: str, sell_city: str) -> bool:
+    """¿Hay que cruzar zona peligrosa para hacer esta ruta? Comprar en Caerleon y vender en su
+    Mercado Negro no lo es: no sales de la ciudad."""
+    if {buy_city, sell_city} <= SAME_CITY:
+        return False
+    return bool({buy_city, sell_city} & RISKY_PLACES)
+
+
+def expected_profit(invest: float, profit: float, risk: float) -> float:
+    """Beneficio esperado si con probabilidad `risk` pierdes la carga entera: lo que llega se cobra
+    (inversión + beneficio) y lo que se pierde, se pierde."""
+    return (invest + profit) * (1 - risk) - invest
+
+
 @dataclass
 class PlanLine:
     opp: Opportunity
@@ -200,6 +221,8 @@ class PlanLine:
     invest: int
     profit: int
     weight: float = 0.0
+    expected: int = 0      # beneficio esperado contando el riesgo del transporte
+    risky: bool = False
 
 
 @dataclass
@@ -210,12 +233,19 @@ class RoutePlan:
     invest: int
     profit: int
     weight: float
+    expected: int = 0
+    risky: bool = False
 
 
 def plan(opps: List[Opportunity], capital: float, max_share: Optional[float] = None,
          profile: str = "max", max_weight: Optional[float] = None,
-         weight_of: Optional[Callable[[str], float]] = None) -> Tuple[List[PlanLine], int]:
+         weight_of: Optional[Callable[[str], float]] = None, risk: float = 0.0,
+         max_risk: Optional[float] = None) -> Tuple[List[PlanLine], int]:
     """Reparte el capital entre las oportunidades (voraz por rentabilidad).
+
+    - risk: probabilidad (0-1) de perder la carga en una ruta peligrosa (ver route_risky). Se ordena y se
+      decide por el beneficio esperado, y se descarta lo que con ese riesgo no compensa.
+    - max_risk: plata máxima que llevar en rutas peligrosas.
 
     - No pone más de `max_share` del capital en un mismo objeto (por defecto, el del perfil).
     - Solo usa oportunidades con cantidades conocidas o estimadas, y nunca las sospechosas.
@@ -239,14 +269,19 @@ def plan(opps: List[Opportunity], capital: float, max_share: Optional[float] = N
             cap = min(cap, max(1, int(o.daily_volume * p.volume_fraction)))
         unit_cost = o.invest / o.units
         unit_profit = o.total_profit / o.units
+        risky = route_risky(o.city, o.sell_city)
+        unit_expected = expected_profit(unit_cost, unit_profit, risk) if risky else unit_profit
+        if unit_expected <= 0:
+            continue
         w = weight_of(o.item_id) or 0.0
-        density = unit_profit / (unit_cost / capital + (w / max_weight if max_weight else 0.0))
-        candidates.append((density, o, cap, unit_cost, unit_profit, w))
+        density = unit_expected / (unit_cost / capital + (w / max_weight if max_weight else 0.0))
+        candidates.append((density, o, cap, unit_cost, unit_profit, w, risky, unit_expected))
 
     left, weight_left = capital, max_weight
+    risky_left = max_risk if max_risk else None
     lines: List[PlanLine] = []
     used = set()
-    for _, o, cap, unit_cost, unit_profit, w in sorted(candidates, key=lambda x: -x[0]):
+    for _, o, cap, unit_cost, unit_profit, w, risky, unit_expected in sorted(candidates, key=lambda x: -x[0]):
         if left <= 0:
             break
         key = (o.item_id, o.sell_city)  # las órdenes del destino se comparten entre calidades y orígenes
@@ -255,12 +290,16 @@ def plan(opps: List[Opportunity], capital: float, max_share: Optional[float] = N
         n = min(cap, int(min(left, capital * share) // unit_cost))
         if weight_left is not None and w > 0:
             n = min(n, int(weight_left // w))
+        if risky and risky_left is not None:
+            n = min(n, int(risky_left // unit_cost))
         if n <= 0:
             continue
         inv = round(n * unit_cost)
-        lines.append(PlanLine(o, n, inv, round(n * unit_profit), n * w))
+        lines.append(PlanLine(o, n, inv, round(n * unit_profit), n * w, round(n * unit_expected), risky))
         used.add(key)
         left -= inv
+        if risky and risky_left is not None:
+            risky_left -= inv
         if weight_left is not None:
             weight_left -= n * w
     return lines, round(left)
@@ -268,7 +307,8 @@ def plan(opps: List[Opportunity], capital: float, max_share: Optional[float] = N
 
 def plan_routes(opps: List[Opportunity], capital: float, profile: str = "max",
                 max_weight: Optional[float] = None,
-                weight_of: Optional[Callable[[str], float]] = None, top: int = 8) -> List[RoutePlan]:
+                weight_of: Optional[Callable[[str], float]] = None, top: int = 8, risk: float = 0.0,
+                max_risk: Optional[float] = None) -> List[RoutePlan]:
     """El mejor cargamento para cada ruta (ciudad de compra → ciudad de venta), ordenado por beneficio.
     Sirve para decidir un único viaje con tu capital y tu capacidad de carga."""
     by_route: Dict[Tuple[str, str], List[Opportunity]] = {}
@@ -276,9 +316,40 @@ def plan_routes(opps: List[Opportunity], capital: float, profile: str = "max",
         by_route.setdefault((o.city, o.sell_city), []).append(o)
     out = []
     for (buy, sell), lst in by_route.items():
-        lines, _ = plan(lst, capital, profile=profile, max_weight=max_weight, weight_of=weight_of)
+        lines, _ = plan(lst, capital, profile=profile, max_weight=max_weight, weight_of=weight_of,
+                        risk=risk, max_risk=max_risk)
         if lines:
             out.append(RoutePlan(buy, sell, lines, sum(l.invest for l in lines), sum(l.profit for l in lines),
-                                 sum(l.weight for l in lines)))
-    out.sort(key=lambda r: -r.profit)
+                                 sum(l.weight for l in lines), sum(l.expected for l in lines), route_risky(buy, sell)))
+    out.sort(key=lambda r: -r.expected)
     return out[:top]
+
+
+# ---------------------------------------------------------------------------- dónde vender lo que tengo
+
+def selling_places(item: str, quality: int, entries: dict, locations: Iterable[str], premium: bool = True) -> List[dict]:
+    """Dónde sacar más por un objeto que ya tienes, ordenado de más a menos plata neta por unidad.
+
+    Por cada mercado mira dos formas de vender:
+      - «Venta rápida»: a la mejor orden de compra que acepte tu calidad (calidad pedida <= la tuya).
+      - «Orden de venta»: igualando la orden de venta más barata (paga además el 2,5 % de publicarla).
+    entries: {(objeto, calidad, ubicación, "offer"|"request"): (precio, timestamp, origen, ...)}
+    """
+    tax = TAX_PREMIUM if premium else TAX_NO_PREMIUM
+    out = []
+    for loc in locations:
+        best = None
+        for q in range(1, quality + 1):
+            e = entries.get((item, q, loc, "request"))
+            if e and e[0] > 0 and (best is None or e[0] > best[0]):
+                best = e
+        if best:
+            out.append({"location": loc, "mode": "quick", "price": best[0], "net": best[0] * (1 - tax),
+                        "ts": best[1], "source": best[2]})
+        if loc != BLACK_MARKET:  # en el Mercado Negro no se ponen órdenes de venta
+            e = entries.get((item, quality, loc, "offer"))
+            if e and e[0] > 0:
+                out.append({"location": loc, "mode": "order", "price": e[0], "net": e[0] * (1 - tax - SETUP_FEE),
+                            "ts": e[1], "source": e[2]})
+    out.sort(key=lambda r: -r["net"])
+    return out

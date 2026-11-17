@@ -30,6 +30,7 @@ DEFAULTS = {
     "server": "Automático", "premium": True, "buy_mode": "instant", "best_only": True,
     "min_pct": "10", "min_silver": "5000", "max_cost": "", "max_age": "6", "search": "", "capital": "", "auto": False, "auto_min": "15",
     "strategy": "bm", "hide_susp": True, "weight": "", "profile": "balanced", "alert": False,
+    "risk": "0", "max_risk": "",
     "cats": ["weapons", "armors", "head", "shoes", "offhands", "bags", "capes"],
     "tiers": [4, 5, 6], "enchs": [0, 1], "quals": [1, 2, 3], "cities": [c for c in CITIES if c != "Brecilien"],
 }
@@ -213,11 +214,21 @@ class App:
                            state="readonly", width=17)
         pcb.pack(side="left", padx=(4, 0))
         pcb.bind("<<ComboboxSelected>>", lambda e: self._filters_changed())
-        ttk.Button(row3, text="★ Plan de inversión", command=self._show_plan).pack(side="left", padx=(12, 4))
-        ttk.Button(row3, text="Exportar para Claude", command=self._export).pack(side="left")
-        ttk.Button(row3, text="🖩 Calculadoras", command=self._show_calculators).pack(side="left", padx=4)
-        ttk.Button(row3, text="☆ Favoritos · Historial · Ganancias", command=self._show_more).pack(side="left")
-        ttk.Button(row3, text="✔ Confirmar en el juego", command=self._show_checklist).pack(side="left", padx=4)
+        for key, label, width in [("risk", "Riesgo de perder la carga en zona roja (%)", 5),
+                                  ("max_risk", "Máx. por viaje en zona roja", 11)]:
+            ttk.Label(row3, text=label).pack(side="left", padx=(12, 0))
+            var = tk.StringVar(value=s[key])
+            ttk.Entry(row3, textvariable=var, width=width).pack(side="left", padx=(4, 0))
+            var.trace_add("write", lambda *a: self._filters_changed())
+            self.entries[key] = var
+        row4 = ttk.Frame(self.root, padding=(10, 4, 10, 0))
+        row4.pack(fill="x")
+        ttk.Button(row4, text="★ Plan de inversión", command=self._show_plan).pack(side="left", padx=(0, 4))
+        ttk.Button(row4, text="✔ Confirmar en el juego", command=self._show_checklist).pack(side="left")
+        ttk.Button(row4, text="Exportar para Claude", command=self._export).pack(side="left", padx=4)
+        ttk.Button(row4, text="🖩 Calculadoras", command=self._show_calculators).pack(side="left")
+        ttk.Button(row4, text="☆ Favoritos · Historial · Ganancias · Dónde vender · Avisos",
+                   command=self._show_more).pack(side="left", padx=4)
 
         # Barra de acciones
         bar = ttk.Frame(self.root, padding=(10, 4))
@@ -364,6 +375,7 @@ class App:
             "cats": sel("cats"), "tiers": sel("tiers"), "enchs": sel("enchs"), "quals": sel("quals"),
             "cities": sel("cities"), "auto": self.auto_var.get(), "auto_min": self.auto_min_var.get().strip(),
             "weight": self.entries["weight"].get().strip(),
+            "risk": self.entries["risk"].get().strip(), "max_risk": self.entries["max_risk"].get().strip(),
             "strategy": STRATEGY_BY_LABEL.get(self.strategy_var.get(), "bm"), "hide_susp": self.susp_var.get(),
             "profile": PROFILE_BY_LABEL.get(self.profile_var.get(), "balanced"), "alert": self.alert_var.get(),
         }
@@ -384,9 +396,10 @@ class App:
         except ValueError:
             return default
 
-    def _compute(self, f: dict, thresholds: bool = True) -> List[Opportunity]:
-        """Oportunidades para los filtros dados (se puede llamar desde el hilo de la API)."""
-        srv = self.effective_server()
+    def _compute(self, f: dict, thresholds: bool = True, server: Optional[str] = None) -> List[Opportunity]:
+        """Oportunidades para los filtros dados. Desde otro hilo hay que pasar `server`: leer la ventana
+        (Tkinter) fuera del hilo principal no es seguro."""
+        srv = server or self.effective_server()
         entries = self.store.load(srv, self._num(f["max_age"], 24))
         c = self.catalog
         search = f["search"] if thresholds else ""
@@ -512,7 +525,7 @@ class App:
                                         "(los leídos en el juego más recientes se conservan)."))
                 # Historial solo de lo que da beneficio: cuánto se vende al día y a qué precio medio
                 best: Dict[str, float] = {}
-                for o in self._compute(f, thresholds=False):
+                for o in self._compute(f, thresholds=False, server=server):
                     if o.profit > 0 and o.item_id in id_set:
                         best[o.item_id] = max(best.get(o.item_id, 0), o.profit)
                 # ...y solo si no tenemos ya su historial reciente (cambia despacio; ahorra peticiones)
@@ -550,8 +563,9 @@ class App:
     def _check_alerts(self) -> None:
         """Avisa (sonido y registro) de oportunidades que no estaban en la actualización anterior."""
         keys = {(o.item_id, o.quality, o.city, o.sell_city): o for o in self.opps if not o.suspicious}
-        if self.alert_seen is not None and self.alert_var.get():
-            new = [o for k, o in keys.items() if k not in self.alert_seen]
+        new = [o for k, o in keys.items() if k not in self.alert_seen] if self.alert_seen is not None else []
+        self._discord_opportunities(new)
+        if self.alert_var.get():
             if new:
                 top = max(new, key=lambda o: o.profit)
                 self.root.bell()
@@ -560,6 +574,22 @@ class App:
                           f"+{fmt(top.profit)} por unidad ({top.percent:.0f} %).")
                 self.status_var.set(f"🔔 {len(new)} oportunidades nuevas con tus filtros.")
         self.alert_seen = set(keys)
+
+    def _discord_opportunities(self, new: List[Opportunity]) -> None:
+        from . import notify
+        cfg = notify.load_config()
+        good = [o for o in new if notify.worth_notifying(o, cfg, self._num)]
+        if cfg.get("enabled") and cfg.get("webhook") and good:
+            self.discord(notify.opportunities_message(good, self.catalog, fmt))
+
+    def discord(self, text: str) -> None:
+        """Manda un aviso a Discord si está activado (en segundo plano; el resultado sale en el registro)."""
+        from . import notify
+        cfg = notify.load_config()
+        if not (cfg.get("enabled") and cfg.get("webhook")):
+            return
+        notify.send_async(cfg["webhook"], text, lambda err: self.events.put(
+            ("log", f"No se pudo avisar a Discord: {err}" if err else "📨 Aviso enviado a Discord.")))
 
     def _show_calculators(self) -> None:
         from .calc_gui import CalculatorsWindow
@@ -600,7 +630,8 @@ class App:
         ttk.Label(win, textvariable=self.plan_info, padding=(10, 8), wraplength=1000, justify="left").pack(fill="x")
         ttk.Label(win, text="Rutas (elige una para ver qué comprar):", padding=(10, 0)).pack(anchor="w")
         rcols = [("route", "Ruta", 300, "w"), ("n", "Objetos", 70, "e"), ("invest", "Inversión", 120, "e"),
-                 ("profit", "Benef. estimado", 130, "e"), ("pct", "%", 70, "e"), ("weight", "Peso (kg)", 90, "e")]
+                 ("profit", "Benef. si llega", 120, "e"), ("exp", "Benef. esperado", 120, "e"),
+                 ("pct", "% esperado", 80, "e"), ("weight", "Peso (kg)", 80, "e")]
         self.route_tree = ttk.Treeview(win, columns=[c[0] for c in rcols], show="headings", height=7,
                                        selectmode="browse")
         for key, title, width, anchor in rcols:
@@ -624,6 +655,11 @@ class App:
         vs.pack(side="right", fill="y")
         self._fill_plan()
 
+    def risk_args(self, f: dict) -> dict:
+        """Riesgo del transporte para el plan: probabilidad (0-1) y plata máxima en zona roja."""
+        return {"risk": min(0.95, max(0.0, self._num(f.get("risk", ""), 0) / 100)),
+                "max_risk": self._num(f.get("max_risk", ""), 0) or None}
+
     def _fill_plan(self) -> None:
         f = self._read_filters()
         capital = self._num(f["capital"], 0)
@@ -637,21 +673,28 @@ class App:
             self._fill_plan_lines()
             return
         w_of = self.catalog.weight
-        lines, left = plan(self.opps, capital, profile=f["profile"], max_weight=weight, weight_of=w_of)
+        ra = self.risk_args(f)
+        lines, left = plan(self.opps, capital, profile=f["profile"], max_weight=weight, weight_of=w_of, **ra)
         rows = []
         if lines:
             rows.append(("__all__", "Todas las rutas mezcladas" + (" (un cargamento)" if weight else ""), lines))
-        for r in plan_routes(self.opps, capital, f["profile"], weight, w_of):
-            rows.append((f"{r.buy_city}|{r.sell_city}", f"{r.buy_city} → {r.sell_city}", r.lines))
+        for r in plan_routes(self.opps, capital, f["profile"], weight, w_of, **ra):
+            rows.append((f"{r.buy_city}|{r.sell_city}", f"{r.buy_city} → {r.sell_city}" + ("  ⚠ zona roja" if r.risky else ""),
+                         r.lines))
         for iid, label, ls in rows:
             inv, prof_total = sum(l.invest for l in ls), sum(l.profit for l in ls)
+            exp = sum(l.expected for l in ls)
             self.plans[iid] = ls
             self.route_tree.insert("", "end", iid=iid, values=(
-                label, len(ls), fmt(inv), fmt(prof_total), f"{prof_total / inv * 100:.1f} %",
+                label, len(ls), fmt(inv), fmt(prof_total), fmt(exp), f"{exp / inv * 100:.1f} %",
                 f"{sum(l.weight for l in ls):.0f}"))
         self.plan_info.set(
             f"Capital: {fmt(capital)}" + (f" · Carga máx.: {weight:g} kg" if weight else "") +
             f" · Estrategia: {STRATEGIES[f['strategy']]} · Perfil «{prof.name}»: {prof.description}\n"
+            + (f"Riesgo en zona roja: {ra['risk'] * 100:g} % de perder la carga"
+               + (f", como mucho {fmt(ra['max_risk'])} por viaje" if ra["max_risk"] else "")
+               + ". «Benef. esperado» ya descuenta ese riesgo; Caerleon → Mercado Negro no lo tiene.\n"
+               if ra["risk"] or ra["max_risk"] else "")
             + ("Las unidades con «~» son estimadas por las ventas diarias. Nunca se incluyen precios sospechosos. "
                "Comprueba el precio en el juego antes de comprar." if rows else
                "No hay oportunidades válidas para este perfil: pulsa «Actualizar precios», afloja los filtros "
@@ -688,7 +731,7 @@ class App:
                             max_age_h=self._num(f["max_age"], 24), capital=capital, location=self.location,
                             live_count=self.store.count_live(srv), filters_text=filters_text,
                             strategy=f["strategy"], profile=f["profile"],
-                            max_weight=self._num(f["weight"], 0) or None)
+                            max_weight=self._num(f["weight"], 0) or None, **self.risk_args(f))
         try:
             path = save_report(text)
         except OSError as e:

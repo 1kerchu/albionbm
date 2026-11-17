@@ -59,7 +59,7 @@ def select_rows(opps: List[Opportunity], limit: int = MAX_ROWS) -> List[Opportun
 def build_report(opps: List[Opportunity], catalog, *, server: str, premium: bool, buy_mode: str,
                  max_age_h: float, capital: Optional[float], location: Optional[str],
                  live_count: int, filters_text: str, strategy: str = "bm", profile: str = "max",
-                 max_weight: Optional[float] = None) -> str:
+                 max_weight: Optional[float] = None, risk: float = 0.0, max_risk: Optional[float] = None) -> str:
     tax = TAX_PREMIUM if premium else TAX_NO_PREMIUM
     rows = select_rows(opps)
     now = time.strftime("%Y-%m-%d %H:%M")
@@ -105,6 +105,10 @@ def build_report(opps: List[Opportunity], catalog, *, server: str, premium: bool
     w(f"- **Capital disponible:** {fmt(capital) + ' de plata' if capital else '(indícalo en tu mensaje)'}")
     w(f"- **Capacidad de carga por viaje:** {f'{max_weight:g} kg' if max_weight else 'sin indicar'}")
     w(f"- **Perfil de riesgo elegido:** {prof.name} — {prof.description}")
+    w(f"- **Riesgo de perder la carga en zona roja:** {risk * 100:g} % por viaje"
+      + (f", como mucho {fmt(max_risk)} de plata en esas rutas" if max_risk else "")
+      + " (rutas a Caerleon, al Mercado Negro o a Brecilien; Caerleon → Mercado Negro no cuenta). Los repartos "
+        "de abajo ya lo descuentan.")
     w(f"- **Estrategia:** {STRATEGIES[strategy]}")
     w(f"- **Servidor:** {SERVER_NAMES.get(server, server)}")
     w(f"- **Prémium:** {'sí' if premium else 'no'} → impuesto de venta {tax * 100:.0f} %")
@@ -124,7 +128,7 @@ def build_report(opps: List[Opportunity], catalog, *, server: str, premium: bool
 
     if capital:
         weight_of = catalog.weight
-        routes = plan_routes(opps, capital, profile, max_weight, weight_of)
+        routes = plan_routes(opps, capital, profile, max_weight, weight_of, risk=risk, max_risk=max_risk)
         if routes:
             w("## Mejores rutas para un solo viaje")
             w("")
@@ -137,7 +141,8 @@ def build_report(opps: List[Opportunity], catalog, *, server: str, premium: bool
                 w(f"| {r.buy_city} → {r.sell_city} | {len(r.lines)} | {fmt(r.invest)} | {fmt(r.profit)} | "
                   f"{r.profit / r.invest * 100:.1f} % | {r.weight:.0f} |")
             w("")
-        lines, left = plan(opps, capital, profile=profile, max_weight=max_weight, weight_of=weight_of)
+        lines, left = plan(opps, capital, profile=profile, max_weight=max_weight, weight_of=weight_of,
+                           risk=risk, max_risk=max_risk)
         w("## Reparto automático propuesto por la app")
         w("")
         if lines:

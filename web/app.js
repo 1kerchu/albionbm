@@ -17,7 +17,7 @@
   const CITY_LABEL = (c) => (c === C.BLACK_MARKET ? "Mercado Negro" : c);
   const DEFAULTS = {
     server: "europe", strategy: "bm", premium: true, buyOrder: false, bestOnly: true, hideSusp: true,
-    minPct: "10", minSilver: "5000", maxCost: "", maxAge: "6", capital: "", weight: "", profile: "balanced",
+    minPct: "10", minSilver: "5000", maxCost: "", maxAge: "6", capital: "", weight: "", profile: "balanced", risk: "0", maxRisk: "",
     cats: ["weapons", "armors", "head", "shoes", "offhands", "bags", "capes"],
     tiers: [4, 5, 6], enchs: [0, 1], quals: [1, 2, 3], cities: C.CITIES.filter((c) => c !== "Brecilien"), sort: "percent",
   };
@@ -55,7 +55,7 @@
       `<label><input type="checkbox" value="${v}" ${checked.includes(v) ? "checked" : ""}>${esc(label(v))}</label>`).join("");
   }
   const checkedVals = (id, numeric) => [...$(id).querySelectorAll("input:checked")].map((i) => (numeric ? Number(i.value) : i.value));
-  const TEXT = ["minPct", "minSilver", "maxCost", "maxAge", "capital", "weight"];
+  const TEXT = ["minPct", "minSilver", "maxCost", "maxAge", "capital", "weight", "risk", "maxRisk"];
   const BOOL = ["premium", "buyOrder", "bestOnly", "hideSusp"];
   const SELECT = ["server", "strategy", "profile", "sort"];
 
@@ -150,19 +150,22 @@
   }
 
   function planOpts(f) {
-    return { profile: f.profile, maxWeight: num(f.weight, 0) || null, weightOf: itemWeight };
+    return { profile: f.profile, maxWeight: num(f.weight, 0) || null, weightOf: itemWeight,
+      risk: Math.min(0.95, Math.max(0, num(f.risk, 0) / 100)), maxRisk: num(f.maxRisk, 0) || null };
   }
 
   function renderPlan(f) {
     const p = C.PROFILES[f.profile];
-    $("profileDesc").textContent = p.description + " Nunca incluye precios sospechosos.";
+    const ro = planOpts(f);
+    $("profileDesc").textContent = p.description + " Nunca incluye precios sospechosos." + (ro.risk || ro.maxRisk
+      ? ` Con un ${fmt(ro.risk * 100)} % de riesgo en zona roja${ro.maxRisk ? ` y como mucho ${fmt(ro.maxRisk)} por viaje` : ""}: el beneficio mostrado es el esperado.` : "");
     const capital = num(f.capital, 0);
     if (capital <= 0) { $("routes").innerHTML = '<div class="empty">Escribe tu capital para ver el plan.</div>'; return; }
     const all = C.plan(opps, capital, planOpts(f));
     const routes = C.planRoutes(opps, capital, planOpts(f));
     const blocks = [];
     if (all.lines.length) blocks.push({ title: "Todas las rutas mezcladas", lines: all.lines });
-    for (const r of routes) blocks.push({ title: `${r.buyCity} → ${CITY_LABEL(r.sellCity)}`, lines: r.lines });
+    for (const r of routes) blocks.push({ title: `${r.buyCity} → ${CITY_LABEL(r.sellCity)}${r.risky ? " ⚠ zona roja" : ""}`, lines: r.lines });
     if (!blocks.length) {
       $("routes").innerHTML = `<div class="empty">${entries.size
         ? "No hay oportunidades válidas para este perfil. Actualiza precios, afloja los filtros o elige un perfil menos estricto."
@@ -171,11 +174,12 @@
     }
     $("routes").innerHTML = blocks.map((b, i) => {
       const inv = b.lines.reduce((s, l) => s + l.invest, 0), prof = b.lines.reduce((s, l) => s + l.profit, 0);
-      const w = b.lines.reduce((s, l) => s + l.weight, 0);
+      const w = b.lines.reduce((s, l) => s + l.weight, 0), exp = b.lines.reduce((s, l) => s + l.expected, 0);
       return `<details class="card"${i === 0 ? " open" : ""}>
         <summary><div class="rname">${esc(b.title)}</div>
           <div class="sub">${b.lines.length} objetos · inversión ${fmt(inv)} · ${fmt(w)} kg</div>
-          <div class="good"><strong>+${fmt(prof)}</strong> (${(prof / inv * 100).toFixed(1)} %)</div></summary>
+          <div class="good"><strong>+${fmt(exp)}</strong> (${(exp / inv * 100).toFixed(1)} %)${exp !== prof
+            ? ` <span class="muted small">esperado; +${fmt(prof)} si todo llega</span>` : ""}</div></summary>
         <table><thead><tr><th>Objeto</th><th>Uds.</th><th>Precio</th><th>Benef.</th></tr></thead><tbody>
         ${b.lines.map((l) => `<tr><td>${esc(itemName(l.opp.itemId))} <span class="muted">${itemLabel(l.opp.itemId)} · ${C.QUALITY_NAMES[l.opp.quality]}
           · ${esc(l.opp.city)} → ${esc(CITY_LABEL(l.opp.sellCity))}</span></td>
@@ -278,6 +282,7 @@
       `- **Capital disponible:** ${capital ? fmt(capital) + " de plata" : "(indícalo en tu mensaje)"}`,
       `- **Capacidad de carga por viaje:** ${weight ? weight + " kg" : "sin indicar"}`,
       `- **Perfil de riesgo:** ${p.name} — ${p.description}`,
+      `- **Riesgo de perder la carga en zona roja:** ${f.risk || 0} % por viaje${num(f.maxRisk, 0) ? `, como mucho ${fmt(num(f.maxRisk, 0))} en esas rutas` : ""} (las rutas de abajo ya lo descuentan; Caerleon → Mercado Negro no cuenta)`,
       `- **Servidor:** ${f.server} · **Prémium:** ${f.premium ? "sí" : "no"} (impuesto ${tax * 100} %) · **Compra:** ${f.buyOrder ? "con orden de compra (+2,5 %)" : "directa"}`,
       `- **Filtros:** tiers ${f.tiers.join(", ")}; encantamientos ${f.enchs.join(", ")}; ciudades ${f.cities.join(", ")}; beneficio mín. ${f.minPct || "—"} % y ${f.minSilver || "—"} de plata; datos de hasta ${f.maxAge || 24} h`,
       `- **Oportunidades encontradas:** ${fmt(opps.length)}`, "");
@@ -285,7 +290,7 @@
       const routes = C.planRoutes(opps, capital, planOpts(f));
       if (routes.length) {
         L.push("## Mejores rutas para un solo viaje", "", "| Ruta | Objetos | Inversión | Benef. estimado | % | Peso (kg) |", "|---|--:|--:|--:|--:|--:|");
-        for (const r of routes) L.push(`| ${r.buyCity} → ${r.sellCity} | ${r.lines.length} | ${fmt(r.invest)} | ${fmt(r.profit)} | ${(r.profit / r.invest * 100).toFixed(1)} % | ${fmt(r.weight)} |`);
+        for (const r of routes) L.push(`| ${r.buyCity} → ${r.sellCity}${r.risky ? " (zona roja)" : ""} | ${r.lines.length} | ${fmt(r.invest)} | ${fmt(r.expected)} | ${(r.expected / r.invest * 100).toFixed(1)} % | ${fmt(r.weight)} |`);
         L.push("");
       }
     }

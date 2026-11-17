@@ -89,7 +89,7 @@ class ChecklistWindow:
         good = [o for o in app.opps if not o.suspicious and o.profit > 0]
         if capital > 0:
             lines, _ = plan(good, capital, profile=f["profile"], max_weight=app._num(f["weight"], 0) or None,
-                            weight_of=app.catalog.weight)
+                            weight_of=app.catalog.weight, **app.risk_args(f))
             opps = [l.opp for l in lines][:n]
             self.source.set(f"Del plan de inversión (perfil {PROFILES[f['profile']].name}).")
         else:

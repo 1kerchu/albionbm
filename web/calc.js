@@ -155,7 +155,17 @@
     return [...best.values()];
   }
 
-  /** Reparto voraz del capital. Devuelve { lines: [{opp, units, invest, profit, weight}], left }. */
+  // Riesgo del transporte: llegar a Caerleon (y su Mercado Negro) o a Brecilien cruza zona roja o la niebla.
+  const RISKY = new Set(["Caerleon", BLACK_MARKET, "Brecilien"]), SAME_CITY = new Set(["Caerleon", BLACK_MARKET]);
+  function routeRisky(buy, sell) {
+    if (SAME_CITY.has(buy) && SAME_CITY.has(sell)) return false;  // comprar en Caerleon y vender en su MN
+    return RISKY.has(buy) || RISKY.has(sell);
+  }
+  /** Beneficio esperado si con probabilidad `risk` pierdes la carga entera. */
+  const expectedProfit = (invest, profit, risk) => (invest + profit) * (1 - risk) - invest;
+
+  /** Reparto voraz del capital. opts: { profile, maxShare, maxWeight, weightOf, risk (0-1), maxRisk }.
+   *  Devuelve { lines: [{opp, units, invest, profit, weight, expected, risky}], left }. */
   function plan(opps, capital, opts) {
     opts = opts || {};
     const p = PROFILES[opts.profile] || PROFILES.max;
@@ -170,11 +180,14 @@
       let cap = o.units;
       if (o.dailyVolume) cap = Math.min(cap, Math.max(1, Math.floor(o.dailyVolume * p.volumeFraction)));
       const unitCost = o.invest / o.units, unitProfit = o.totalProfit / o.units, w = weightOf(o.itemId) || 0;
-      const density = unitProfit / (unitCost / capital + (maxWeight ? w / maxWeight : 0));
-      cands.push({ density, o, cap, unitCost, unitProfit, w });
+      const risky = routeRisky(o.city, o.sellCity);
+      const unitExpected = risky ? expectedProfit(unitCost, unitProfit, opts.risk || 0) : unitProfit;
+      if (unitExpected <= 0) continue;
+      const density = unitExpected / (unitCost / capital + (maxWeight ? w / maxWeight : 0));
+      cands.push({ density, o, cap, unitCost, unitProfit, w, risky, unitExpected });
     }
     cands.sort((a, b) => b.density - a.density);
-    let left = capital, weightLeft = maxWeight;
+    let left = capital, weightLeft = maxWeight, riskyLeft = opts.maxRisk || null;
     const lines = [], used = new Set();
     for (const c of cands) {
       if (left <= 0) break;
@@ -182,11 +195,14 @@
       if (used.has(k)) continue;
       let n = Math.min(c.cap, Math.floor(Math.min(left, capital * share) / c.unitCost));
       if (weightLeft != null && c.w > 0) n = Math.min(n, Math.floor(weightLeft / c.w));
+      if (c.risky && riskyLeft != null) n = Math.min(n, Math.floor(riskyLeft / c.unitCost));
       if (n <= 0) continue;
       const inv = Math.round(n * c.unitCost);
-      lines.push({ opp: c.o, units: n, invest: inv, profit: Math.round(n * c.unitProfit), weight: n * c.w });
+      lines.push({ opp: c.o, units: n, invest: inv, profit: Math.round(n * c.unitProfit), weight: n * c.w,
+        expected: Math.round(n * c.unitExpected), risky: c.risky });
       used.add(k);
       left -= inv;
+      if (c.risky && riskyLeft != null) riskyLeft -= inv;
       if (weightLeft != null) weightLeft -= n * c.w;
     }
     return { lines, left: Math.round(left) };
@@ -206,13 +222,33 @@
       if (!lines.length) continue;
       const [buyCity, sellCity] = k.split("|");
       const sum = (f) => lines.reduce((s, l) => s + l[f], 0);
-      out.push({ buyCity, sellCity, lines, invest: sum("invest"), profit: sum("profit"), weight: sum("weight") });
+      out.push({ buyCity, sellCity, lines, invest: sum("invest"), profit: sum("profit"), weight: sum("weight"),
+        expected: sum("expected"), risky: routeRisky(buyCity, sellCity) });
     }
-    out.sort((a, b) => b.profit - a.profit);
+    out.sort((a, b) => b.expected - a.expected);
     return out.slice(0, top || 8);
   }
 
-  const api = { BLACK_MARKET, CITIES, QUALITY_NAMES, STRATEGIES, PROFILES, SETUP_FEE, TAX_PREMIUM, TAX_NO_PREMIUM,
+  /** Dónde sacar más por un objeto que ya tienes: venta rápida (mejor orden de compra que acepte tu calidad)
+   *  u orden de venta (igualando la más barata, +2,5 %). Ordenado por plata neta por unidad. */
+  function sellingPlaces(item, quality, entries, locations, premium) {
+    const tax = premium === false ? TAX_NO_PREMIUM : TAX_PREMIUM, out = [];
+    for (const loc of locations) {
+      let best = null;
+      for (let q = 1; q <= quality; q++) {
+        const e = entries.get(key(item, q, loc, "request"));
+        if (e && e.p > 0 && (!best || e.p > best.p)) best = e;
+      }
+      if (best) out.push({ location: loc, mode: "quick", price: best.p, net: best.p * (1 - tax), ts: best.ts });
+      if (loc !== BLACK_MARKET) {
+        const e = entries.get(key(item, quality, loc, "offer"));
+        if (e && e.p > 0) out.push({ location: loc, mode: "order", price: e.p, net: e.p * (1 - tax - SETUP_FEE), ts: e.ts });
+      }
+    }
+    return out.sort((a, b) => b.net - a.net);
+  }
+
+  const api = { routeRisky, expectedProfit, sellingPlaces, BLACK_MARKET, CITIES, QUALITY_NAMES, STRATEGIES, PROFILES, SETUP_FEE, TAX_PREMIUM, TAX_NO_PREMIUM,
     parseApiDate, chunkIds, mergePrices, mergeHistory, compute, bestPerItem, plan, planRoutes };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.AlbionCalc = api;

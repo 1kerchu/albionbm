@@ -244,10 +244,58 @@
         e.sellOrder ? "si" : "no", e.premium ? "si" : "no", e.cost, e.profit].join(";"))).join("\n");
   }
 
+  // ================================================================ dónde vender lo que tengo
+  const INV_KEY = "albionbm.inventory.v1";
+  let inventory = load(INV_KEY, []);   // [{id, quality, qty}]
+  const NOT_BM = new Set(["resources", "consumables", "mounts", "artefacts"]);
+  const sellLocs = (id) => A.readForm().cities.concat(NOT_BM.has((A.base(id) || {}).c) ? [] : [C.BLACK_MARKET]);
+
+  function addInventory(it) {
+    const ench = Number($("sEnch").value);
+    if (ench && !it.f && !it.e.includes(ench)) { $("sStatus").textContent = "Ese objeto no existe con ese encantamiento."; return; }
+    const id = it.f || !ench ? it.id : `${it.id}@${ench}`, q = Number($("sQual").value);
+    const qty = Math.max(1, Math.floor(num($("sQty").value, 1)));
+    const ex = inventory.find((x) => x.id === id && x.quality === q);
+    if (ex) ex.qty += qty; else inventory.push({ id, quality: q, qty });
+    save(INV_KEY, inventory); $("sStatus").textContent = ""; renderSell();
+  }
+
+  async function checkSell() {
+    if (!inventory.length) { $("sStatus").textContent = "Añade algún objeto primero."; return; }
+    const ids = [...new Set(inventory.map((x) => x.id))];
+    const locs = [...new Set(inventory.flatMap((x) => sellLocs(x.id)))];
+    const quals = Array.from({ length: Math.max(...inventory.map((x) => x.quality)) }, (_, i) => i + 1);
+    $("sCheck").disabled = true;
+    await U.fetchPrices(ids, locs, quals, "sStatus");
+    $("sCheck").disabled = false;
+    renderSell();
+  }
+
+  function renderSell() {
+    const premium = A.readForm().premium, mode = { quick: "venta rápida", order: "orden de venta" };
+    let total = 0;
+    $("sList").innerHTML = inventory.length ? inventory.map((x, i) => {
+      const places = C.sellingPlaces(x.id, x.quality, A.entries, sellLocs(x.id), premium);
+      const best = places[0], second = places[1];
+      if (best) total += best.net * x.qty;
+      return `<article class="card" data-i="${i}">
+        <div class="top"><div><div class="name">${esc(A.itemName(x.id))}</div>
+          <div class="sub">${A.itemLabel(x.id)} · ${C.QUALITY_NAMES[x.quality]} · ${fmt(x.qty)} uds.</div></div>
+          ${best ? `<div class="pct good">${fmt(best.net * x.qty)}<div class="sub">${fmt(best.net)}/ud.</div></div>` : ""}
+          <button class="star" data-act="del" aria-label="Quitar">✕</button></div>
+        <div class="route">${best ? `Mejor: <strong>${esc(A.CITY_LABEL(best.location))}</strong> · ${mode[best.mode]}` : "Sin precios: pulsa «Buscar precios y comparar»."}</div>
+        ${second ? `<div class="sub">Segunda opción: ${esc(A.CITY_LABEL(second.location))} · ${mode[second.mode]} · ${fmt(second.net)}/ud.</div>` : ""}
+      </article>`;
+    }).join("") : '<div class="empty">Añade los objetos que tienes para ver dónde venderlos.</div>';
+    $("sTotal").innerHTML = inventory.length ? `<div class="big">${fmt(total)}</div><div class="muted">plata neta vendiéndolo todo en el mejor sitio</div>` : "";
+  }
+
   // ================================================================ arranque
   function showKind() {
     const k = $("moreKind").value;
     $("more-favs").hidden = k !== "favs"; $("more-hist").hidden = k !== "hist"; $("more-ledger").hidden = k !== "ledger";
+    $("more-sell").hidden = k !== "sell";
+    if (k === "sell") renderSell();
     if (k === "favs") renderFavs();
     if (k === "ledger") renderLedger();
   }
@@ -257,6 +305,13 @@
     if (ready) { showKind(); return; }
     ready = true;
     $("hQual").innerHTML = Object.entries(C.QUALITY_NAMES).map(([q, n]) => opt(q, n)).join("");
+    $("sQual").innerHTML = $("hQual").innerHTML;
+    U.setupSearch("sSearch", "sResults", () => true, addInventory);
+    $("sCheck").addEventListener("click", checkSell);
+    $("sList").addEventListener("click", (e) => {
+      if (e.target.dataset.act !== "del") return;
+      inventory.splice(Number(e.target.closest(".card").dataset.i), 1); save(INV_KEY, inventory); renderSell();
+    });
     $("moreKind").addEventListener("change", showKind);
 
     U.setupSearch("fSearch", "fResults", () => true, (it) => addFav(it.id, 1));

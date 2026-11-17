@@ -52,3 +52,21 @@ test("historial y precios de la API", () => {
     buy_price_max: 5000, buy_price_max_date: "2026-01-01T10:00:00" }]);
   assert.deepStrictEqual([...entries.keys()], ["X|1|Black Market|request"]);
 });
+
+test("riesgo del transporte y dónde vender", () => {
+  assert.strictEqual(C.routeRisky("Caerleon", "Black Market"), false);
+  assert.strictEqual(C.routeRisky("Lymhurst", "Black Market"), true);
+  assert.strictEqual(C.routeRisky("Lymhurst", "Martlock"), false);
+  const e = E({ "A|1|Lymhurst|offer": 1000, "A|1|Black Market|request": 1600, "B|1|Caerleon|offer": 1000, "B|1|Black Market|request": 1300 });
+  const stats = new Map([["A|1|Black Market", { daily: 100, avg: 1600 }], ["B|1|Black Market", { daily: 100, avg: 1300 }]]);
+  const opps = C.compute(e, stats, { cities: ["Lymhurst", "Caerleon"], qualities: [1], premium: true, now });
+  assert.strictEqual(C.plan(opps, 50000, { profile: "max" }).lines[0].opp.itemId, "A");
+  const risky = C.plan(opps, 50000, { profile: "max", risk: 0.4 }).lines;
+  assert.deepStrictEqual(risky.map((l) => [l.opp.itemId, l.risky, l.expected === l.profit]), [["B", false, true]]);
+  const some = C.plan(opps, 50000, { profile: "max", risk: 0.05, maxRisk: 10000 }).lines.find((l) => l.opp.itemId === "A");
+  assert.ok(some.invest <= 10000 && some.risky);
+  assert.deepStrictEqual(C.planRoutes(opps, 50000, { risk: 0.4 }).map((r) => [r.buyCity, r.sellCity, r.risky]), [["Caerleon", "Black Market", false]]);
+  const s = E({ "X|1|Lymhurst|request": 900, "X|3|Lymhurst|request": 5000, "X|2|Martlock|offer": 1200, "X|1|Black Market|request": 1100, "X|2|Black Market|offer": 99999 });
+  assert.deepStrictEqual(C.sellingPlaces("X", 2, s, ["Lymhurst", "Martlock", "Black Market"], true).map((x) => [x.location, x.mode, x.price]),
+    [["Martlock", "order", 1200], ["Black Market", "quick", 1100], ["Lymhurst", "quick", 900]]);
+});

@@ -11,7 +11,7 @@ from typing import List, Optional
 
 from . import calculators as K
 from .api import fetch_history, fetch_prices, history_series, rows_to_prices, week_summary
-from .calc import QUALITY_NAMES
+from .calc import QUALITY_NAMES, selling_places
 from .calc_gui import ItemPicker, fmt, num, run_async
 from .export import export_dir
 from .game import BLACK_MARKET, CITIES
@@ -70,6 +70,9 @@ class MoreWindow:
         self.nb.add(self.ledger.frame, text="Registro manual")
         self.auto = AutoLedgerTab(self.nb, self)
         self.nb.add(self.auto.frame, text="Historial automático")
+        self.sell = SellTab(self.nb, self)
+        self.nb.add(self.sell.frame, text="Dónde vender")
+        self.nb.add(DiscordTab(self.nb, self).frame, text="Avisos a Discord")
 
     def exists(self) -> bool:
         return bool(self.win.winfo_exists())
@@ -249,6 +252,10 @@ class FavoritesTab:
                 names = ", ".join(app.catalog.name(h.split("|")[0]) for h in sorted(fresh)[:3])
                 app.root.bell()
                 app._log(f"🔔 {len(fresh)} aviso(s) de precio: {names}")
+                from . import notify
+                if notify.load_config().get("favs"):
+                    app.discord(f"🔔 **Aviso de precio** en Albion: {names}" + (" y más" if len(fresh) > 3 else "")
+                                + ". Míralo en la app.")
 
         run_async(app, job, done)
 
@@ -602,3 +609,211 @@ class AutoLedgerTab:
             messagebox.showinfo("Albion BM", f"Historial guardado en:\n{path}", parent=self.o.win)
         except OSError as e:
             messagebox.showerror("Albion BM", f"No se pudo guardar: {e}", parent=self.o.win)
+
+
+# ---------------------------------------------------------------------------- dónde vender lo que tengo
+
+class SellTab:
+    """Para los objetos que ya tienes: en qué mercado y de qué forma sacas más por cada uno."""
+
+    def __init__(self, parent, owner: MoreWindow):
+        self.o = owner
+        self.items = load_json("inventario.json", [])  # [{id, quality, qty}]
+        f = self.frame = ttk.Frame(parent, padding=10)
+        add = ttk.Frame(f)
+        add.pack(fill="x")
+        ItemPicker(add, "Añadir objeto (elige encantamiento, calidad y cantidad, y luego el objeto)",
+                   lambda: owner.app.catalog.items, self.add).pack(side="left", fill="x", expand=True)
+        side = ttk.Frame(add)
+        side.pack(side="left", padx=(10, 0), anchor="n")
+        self.ench, self.qual, self.qty = tk.StringVar(value="0"), tk.StringVar(value=QUALITIES[0]), tk.StringVar(value="1")
+        for label, widget in (("Encantamiento", ttk.Combobox(side, textvariable=self.ench, values=["0", "1", "2", "3", "4"], state="readonly", width=12)),
+                              ("Calidad", ttk.Combobox(side, textvariable=self.qual, values=QUALITIES, state="readonly", width=12)),
+                              ("Cantidad", ttk.Entry(side, textvariable=self.qty, width=14))):
+            ttk.Label(side, text=label).pack(anchor="w")
+            widget.pack()
+        bar = ttk.Frame(f)
+        bar.pack(fill="x", pady=8)
+        self.btn = ttk.Button(bar, text="Buscar precios y comparar", command=self.check)
+        self.btn.pack(side="left")
+        ttk.Button(bar, text="Cargar lo que tengo sin vender", command=self.load_stock).pack(side="left", padx=6)
+        ttk.Button(bar, text="Quitar el seleccionado", command=self.remove).pack(side="left")
+        ttk.Button(bar, text="Vaciar", command=self.clear).pack(side="left", padx=6)
+        self.status = tk.StringVar()
+        ttk.Label(bar, textvariable=self.status, foreground="gray").pack(side="left")
+        self.total = tk.StringVar()
+        ttk.Label(f, textvariable=self.total, font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        cols = [("name", "Objeto", 220, "w"), ("tier", "Tier", 45, "center"), ("qual", "Calidad", 85, "w"), ("qty", "Uds.", 50, "e"),
+                ("best", "Mejor sitio", 190, "w"), ("unit", "Neto/ud.", 85, "e"), ("tot", "Neto total", 95, "e"),
+                ("second", "Segunda opción", 190, "w")]
+        self.tree = ttk.Treeview(f, columns=[c[0] for c in cols], show="headings", selectmode="browse")
+        for key, title, width, anchor in cols:
+            self.tree.heading(key, text=title)
+            self.tree.column(key, width=width, anchor=anchor, stretch=key == "name")
+        self.tree.pack(fill="both", expand=True)
+        ttk.Label(f, foreground="gray", wraplength=820, justify="left", text=(
+            "«Venta rápida» = vender ya a la mejor orden de compra que acepte tu calidad. «Orden de venta» = poner tu "
+            "orden igualando la más barata (tarda y paga un 2,5 % más). Neto = tras impuestos. Usa las ciudades "
+            "marcadas en la ventana principal y el Mercado Negro si es equipo.")).pack(anchor="w", pady=(6, 0))
+        self.render()
+
+    def item_id(self, it: dict, ench: int) -> Optional[str]:
+        if ench and not it.get("f") and ench not in it["e"]:
+            return None
+        return it["id"] if it.get("f") or not ench else f"{it['id']}@{ench}"
+
+    def add(self, it: dict) -> None:
+        iid = self.item_id(it, int(self.ench.get()))
+        if not iid:
+            self.status.set("Ese objeto no existe con ese encantamiento.")
+            return
+        q, n = quality_of(self.qual.get()), max(1, int(num(self.qty.get(), 1)))
+        for x in self.items:
+            if x["id"] == iid and x["quality"] == q:
+                x["qty"] += n
+                break
+        else:
+            self.items.append({"id": iid, "quality": q, "qty": n})
+        save_json("inventario.json", self.items)
+        self.render()
+
+    def load_stock(self) -> None:
+        """Lo que el historial automático te vio comprar y aún no te ha visto vender."""
+        app = self.o.app
+        stock: dict = {}
+        for m in app.store.load_movements(app.effective_server()):
+            sign = 1 if m["kind"] in BUYS else -1
+            stock[m["item"]] = stock.get(m["item"], 0) + sign * m["qty"]
+        added = 0
+        for item, n in stock.items():
+            if n > 0 and not any(x["id"] == item for x in self.items):
+                self.items.append({"id": item, "quality": 1, "qty": n})
+                added += 1
+        save_json("inventario.json", self.items)
+        self.status.set(f"Añadidos {added} objetos del historial (con calidad Normal: cámbiala si no lo es)." if added
+                        else "El historial automático no tiene objetos comprados sin vender.")
+        self.render()
+
+    def remove(self) -> None:
+        sel = self.tree.selection()
+        if sel:
+            del self.items[int(sel[0])]
+            save_json("inventario.json", self.items)
+            self.render()
+
+    def clear(self) -> None:
+        if self.items and messagebox.askyesno("Albion BM", "¿Vaciar la lista?", parent=self.o.win):
+            self.items = []
+            save_json("inventario.json", self.items)
+            self.render()
+
+    def locations(self, item: str) -> List[str]:
+        equip = self.o.app.catalog.base(item).get("c") not in NOT_BLACK_MARKET
+        return self.o.cities() + ([BLACK_MARKET] if equip else [])
+
+    def check(self) -> None:
+        if not self.items:
+            self.status.set("Añade algún objeto primero.")
+            return
+        app, server = self.o.app, self.o.app.effective_server()
+        ids = sorted({x["id"] for x in self.items})
+        locs = sorted({loc for x in self.items for loc in self.locations(x["id"])})
+        quals = list(range(1, max(x["quality"] for x in self.items) + 1))
+        self.btn.configure(state="disabled")
+        self.status.set("Buscando precios…")
+
+        def job():
+            prices, stamps = rows_to_prices(fetch_prices(server, ids, locs, quals))
+            app.store.upsert(server, prices, source="api", timestamps=stamps)
+
+        def done(_r, error):
+            if not self.o.exists():
+                return
+            self.btn.configure(state="normal")
+            self.status.set(f"Error: {error}" if error else "Precios actualizados.")
+            self.render()
+
+        run_async(app, job, done)
+
+    def render(self) -> None:
+        app = self.o.app
+        entries = app.store.load(app.effective_server(), 24)
+        cat, total = app.catalog, 0.0
+        self.tree.delete(*self.tree.get_children())
+        mode = {"quick": "venta rápida", "order": "orden de venta"}
+        for i, x in enumerate(self.items):
+            places = selling_places(x["id"], x["quality"], entries, self.locations(x["id"]), app.premium_var.get())
+            best = places[0] if places else None
+            second = places[1] if len(places) > 1 else None
+            if best:
+                total += best["net"] * x["qty"]
+            self.tree.insert("", "end", iid=str(i), values=(
+                cat.name(x["id"]), cat.label(x["id"]), QUALITY_NAMES[x["quality"]], fmt(x["qty"]),
+                f"{city_label(best['location'])} · {mode[best['mode']]}" if best else "sin precios",
+                fmt(best["net"]) if best else "—", fmt(best["net"] * x["qty"]) if best else "—",
+                f"{city_label(second['location'])} · {mode[second['mode']]}: {fmt(second['net'])}" if second else ""))
+        self.total.set(f"Vendiéndolo todo en el mejor sitio: {fmt(total)} de plata neta" if self.items else
+                       "Añade los objetos que tienes para ver dónde venderlos.")
+
+
+# ---------------------------------------------------------------------------- avisos a Discord
+
+class DiscordTab:
+    def __init__(self, parent, owner: MoreWindow):
+        from . import notify
+        self.o, self.notify = owner, notify
+        cfg = notify.load_config()
+        f = self.frame = ttk.Frame(parent, padding=12)
+        ttk.Label(f, wraplength=820, justify="left", text=(
+            "Con la app abierta en el PC, te llega un mensaje a Discord (y al móvil, con la app de Discord) "
+            "cuando aparecen oportunidades nuevas que superen tus mínimos o se cumple el aviso de un favorito.\n\n"
+            "Cómo conseguir el webhook: en un servidor de Discord tuyo, ajustes del canal → Integraciones → Webhooks → "
+            "Nuevo webhook → Copiar URL del webhook, y pégala aquí.")).pack(anchor="w")
+        g = ttk.Frame(f)
+        g.pack(fill="x", pady=10)
+        self.webhook = tk.StringVar(value=cfg["webhook"])
+        self.enabled = tk.BooleanVar(value=cfg["enabled"])
+        self.min_pct, self.min_total = tk.StringVar(value=cfg["min_pct"]), tk.StringVar(value=cfg["min_total"])
+        self.favs = tk.BooleanVar(value=cfg["favs"])
+        ttk.Label(g, text="URL del webhook").grid(row=0, column=0, sticky="w")
+        ttk.Entry(g, textvariable=self.webhook, width=80, show="•").grid(row=0, column=1, columnspan=3, sticky="w", padx=6)
+        ttk.Checkbutton(g, text="Activar avisos a Discord", variable=self.enabled).grid(row=1, column=0, columnspan=2, sticky="w", pady=4)
+        ttk.Label(g, text="Avisar si el beneficio es al menos (%)").grid(row=2, column=0, sticky="w")
+        ttk.Entry(g, textvariable=self.min_pct, width=8).grid(row=2, column=1, sticky="w", padx=6)
+        ttk.Label(g, text="y el beneficio total al menos (plata)").grid(row=3, column=0, sticky="w")
+        ttk.Entry(g, textvariable=self.min_total, width=12).grid(row=3, column=1, sticky="w", padx=6)
+        ttk.Checkbutton(g, text="Avisar también de los favoritos que cumplen su precio", variable=self.favs).grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=4)
+        bar = ttk.Frame(f)
+        bar.pack(fill="x")
+        ttk.Button(bar, text="Guardar", command=self.save).pack(side="left")
+        ttk.Button(bar, text="Enviar mensaje de prueba", command=self.test).pack(side="left", padx=6)
+        self.status = tk.StringVar()
+        ttk.Label(bar, textvariable=self.status, foreground="gray").pack(side="left", padx=6)
+        ttk.Label(f, foreground="gray", wraplength=820, justify="left", text=(
+            "Las oportunidades se revisan tras cada «Actualizar precios»: activa «Auto cada N min» en la ventana "
+            "principal para que se revisen solas. Solo se avisa de las que no estaban en la revisión anterior. "
+            "Los favoritos se revisan con «Comprobar sola cada 10 min» de su pestaña, con esta ventana abierta.\n"
+            "El webhook se guarda solo en este PC. Quien tenga esa URL puede escribir en tu canal: no la compartas.")
+                  ).pack(anchor="w", pady=(12, 0))
+
+    def config(self) -> dict:
+        return {"webhook": self.webhook.get().strip(), "enabled": self.enabled.get(), "min_pct": self.min_pct.get().strip(),
+                "min_total": self.min_total.get().strip(), "favs": self.favs.get()}
+
+    def save(self) -> None:
+        cfg = self.config()
+        if cfg["enabled"] and not self.notify.valid_webhook(cfg["webhook"]):
+            self.status.set("Esa URL no parece un webhook de Discord.")
+            return
+        self.notify.save_config(cfg)
+        self.status.set("Guardado.")
+
+    def test(self) -> None:
+        url = self.webhook.get().strip()
+        self.status.set("Enviando…")
+        app = self.o.app
+        self.notify.send_async(url, "✅ Prueba de **Albion BM**: los avisos te llegarán a este canal.",
+                               # se llama desde otro hilo: todo lo que toca la ventana va por la cola
+                               lambda err: app.events.put(("call", lambda: self.status.set(err or "Enviado. Míralo en Discord.")
+                                                           if self.o.exists() else None)))

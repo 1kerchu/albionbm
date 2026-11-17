@@ -139,6 +139,27 @@ Botón **☆ Favoritos · Historial · Ganancias** en Windows y pestaña **Más*
 La pestaña **Ranking** de las Calculadoras repasa todas las recetas y ordena qué da más beneficio al
 fabricar o refinar. En Windows, favoritos y ganancias se guardan en `%APPDATA%\AlbionBM\`.
 
+## Riesgo del transporte
+
+Junto a «Mi capital»: **Riesgo de perder la carga en zona roja (%)** y **Máx. por viaje en zona roja**.
+Las rutas a Caerleon, al Mercado Negro o a Brecilien se marcan como peligrosas (Caerleon → Mercado Negro
+no, porque no sales de la ciudad). El plan usa el **beneficio esperado**:
+`(inversión + beneficio) × (1 − riesgo) − inversión`, descarta lo que con ese riesgo no compensa y no
+lleva más plata de la indicada en rutas peligrosas.
+
+## Dónde vender lo que tengo
+
+En **Más → Dónde vender** (web) o **☆ … → Dónde vender** (Windows). Apuntas los objetos que tienes y te dice,
+para cada uno, el mercado y la forma de venta con más plata neta: venta rápida a la mejor orden de compra que
+acepte tu calidad, u orden de venta igualando la más barata. En Windows, «Cargar lo que tengo sin vender»
+rellena la lista con lo que el historial automático te vio comprar y aún no vender.
+
+## Avisos a Discord (solo Windows)
+
+En **☆ … → Avisos a Discord**. Pegas el webhook de un canal tuyo y la app, encendida en el PC, manda un
+mensaje cuando aparecen oportunidades nuevas que superan tus mínimos (% y beneficio total) o se cumple el
+aviso de un favorito. Combínalo con «Auto cada N min». El webhook se guarda solo en tu PC.
+
 ## Confirmar en el juego (solo Windows)
 
 Botón **✔ Confirmar en el juego**. Toma tus mejores oportunidades (las de tu plan de inversión si has
@@ -207,6 +228,8 @@ antigüedad del precio más viejo de los dos.
 | `albionbm/api.py` | Cliente de la API de Albion Online Data Project |
 | `albionbm/calc.py` | Estrategias, oportunidades, precios sospechosos, perfiles y plan de inversión |
 | `albionbm/export.py` | Informe en Markdown para pegárselo a Claude |
+| `albionbm/notify.py` | Avisos a Discord por webhook |
+| `albionbm/checklist.py` | Lista «Confirmar en el juego» |
 | `albionbm/gui.py` | Ventana (Tkinter) |
 | `data/items.json` | Equipo, recursos, consumibles, monturas y artefactos (T4–T8, nombres en español) |
 | `scripts/build_items.py` | Regenera `data/items.json` cuando sale contenido nuevo |

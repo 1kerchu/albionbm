@@ -372,6 +372,86 @@ class MovementTests(unittest.TestCase):
             s.close()
 
 
+class RiskAndSellTests(unittest.TestCase):
+    now = 1_800_000_000.0
+
+    def e(self, price):
+        return (price, self.now, "api", None)
+
+    def test_route_risky(self):
+        self.assertFalse(calc.route_risky("Caerleon", BLACK_MARKET))   # no sales de Caerleon
+        self.assertTrue(calc.route_risky("Lymhurst", BLACK_MARKET))
+        self.assertTrue(calc.route_risky("Brecilien", "Martlock"))
+        self.assertFalse(calc.route_risky("Lymhurst", "Martlock"))
+        self.assertAlmostEqual(calc.expected_profit(1000, 500, 0.1), 1500 * 0.9 - 1000)
+
+    def test_plan_with_risk(self):
+        entries = {("A", 1, "Lymhurst", "offer"): self.e(1000), ("A", 1, BLACK_MARKET, "request"): self.e(1600),
+                   ("B", 1, "Caerleon", "offer"): self.e(1000), ("B", 1, BLACK_MARKET, "request"): self.e(1300)}
+        stats = {("A", 1, BLACK_MARKET): (100.0, 1600.0), ("B", 1, BLACK_MARKET): (100.0, 1300.0)}
+        opps = calc.compute(entries, ["Lymhurst", "Caerleon"], [1], now=self.now, stats=stats)
+        # Sin riesgo gana A (más margen); con un 40 % de perder la carga, A deja de compensar (1536 × 0,6 < 1000) y queda B
+        no_risk, _ = calc.plan(opps, 50_000, profile="max")
+        self.assertEqual(no_risk[0].opp.item_id, "A")
+        risky, _ = calc.plan(opps, 50_000, profile="max", risk=0.4)
+        self.assertEqual([l.opp.item_id for l in risky], ["B"])
+        self.assertFalse(risky[0].risky)
+        self.assertEqual(risky[0].expected, risky[0].profit)
+        # Con poco riesgo A sigue, pero limitada por la plata máxima en zona roja
+        some, _ = calc.plan(opps, 50_000, profile="max", risk=0.05, max_risk=10_000)
+        a = next(l for l in some if l.opp.item_id == "A")
+        self.assertLessEqual(a.invest, 10_000)
+        self.assertTrue(a.risky)
+        self.assertAlmostEqual(a.expected, calc.expected_profit(a.invest, a.profit, 0.05), delta=2)
+        routes = calc.plan_routes(opps, 50_000, risk=0.4)
+        self.assertEqual([(r.buy_city, r.sell_city, r.risky) for r in routes], [("Caerleon", BLACK_MARKET, False)])
+
+    def test_selling_places(self):
+        entries = {("X", 1, "Lymhurst", "request"): self.e(900), ("X", 3, "Lymhurst", "request"): self.e(5000),
+                   ("X", 2, "Martlock", "offer"): self.e(1200), ("X", 1, BLACK_MARKET, "request"): self.e(1100),
+                   ("X", 2, BLACK_MARKET, "offer"): self.e(99999)}
+        r = calc.selling_places("X", 2, entries, ["Lymhurst", "Martlock", BLACK_MARKET])
+        self.assertEqual([(x["location"], x["mode"], x["price"]) for x in r],
+                         [("Martlock", "order", 1200), (BLACK_MARKET, "quick", 1100), ("Lymhurst", "quick", 900)])
+        self.assertAlmostEqual(r[0]["net"], 1200 * (1 - 0.04 - 0.025))
+
+
+class DiscordTests(unittest.TestCase):
+    def test_send_validates_and_posts(self):
+        from albionbm import notify
+        self.assertIn("webhook", notify.send("https://example.com/x", "hola"))
+        sent = {}
+
+        class Resp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        orig = notify.urllib.request.urlopen
+        notify.urllib.request.urlopen = lambda req, timeout, context: (sent.update(url=req.full_url, body=req.data,
+                                                                                   ua=req.get_header("User-agent")), Resp())[1]
+        try:
+            self.assertIsNone(notify.send("https://discord.com/api/webhooks/1/abc", "x" * 3000))
+        finally:
+            notify.urllib.request.urlopen = orig
+        body = json.loads(sent["body"])
+        self.assertEqual((sent["url"], body["username"], len(body["content"])), ("https://discord.com/api/webhooks/1/abc", "Albion BM", 1900))
+        self.assertTrue(sent["ua"].startswith("AlbionBM/"))
+
+    def test_message_and_thresholds(self):
+        from albionbm import notify
+        now = time.time()
+        entries = {("T4_BAG", 1, "Lymhurst", "offer"): (1000, now, "api", None), ("T4_BAG", 1, BLACK_MARKET, "request"): (2000, now, "api", None),
+                   ("T5_BAG", 1, "Lymhurst", "offer"): (1000, now, "api", None), ("T5_BAG", 1, BLACK_MARKET, "request"): (1100, now, "api", None)}
+        opps = calc.compute(entries, ["Lymhurst"], [1], now=now)
+        num = lambda v, d: float(v) if v else d
+        good = [o for o in opps if notify.worth_notifying(o, {"min_pct": "20", "min_total": "500"}, num)]
+        self.assertEqual([o.item_id for o in good], ["T4_BAG"])
+        msg = notify.opportunities_message(good, Catalog(load_items()), lambda n: f"{round(n):,}".replace(",", "."))
+        self.assertIn("Bolsa del iniciado", msg)
+        self.assertIn("Lymhurst → Mercado Negro", msg)
+        self.assertIn("+920/ud. (92 %)", msg)
+
+
 class ChecklistTests(unittest.TestCase):
     def setUp(self):
         from albionbm import checklist as CL
