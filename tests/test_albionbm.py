@@ -372,6 +372,47 @@ class MovementTests(unittest.TestCase):
             s.close()
 
 
+class ChecklistTests(unittest.TestCase):
+    def setUp(self):
+        from albionbm import checklist as CL
+        self.CL = CL
+        self.now = time.time()
+        api_e = lambda p: (p, self.now - 3600, "api", None)
+        self.entries = {("A", 1, "Lymhurst", "offer"): api_e(1000), ("A", 1, BLACK_MARKET, "request"): api_e(2000),
+                        ("B", 2, "Lymhurst", "offer"): api_e(500), ("B", 1, BLACK_MARKET, "request"): api_e(900),
+                        ("C", 1, "Martlock", "offer"): api_e(300), ("C", 1, BLACK_MARKET, "request"): api_e(700)}
+        self.opps = calc.compute(self.entries, ["Lymhurst", "Martlock"], [1, 2], now=self.now)
+
+    def test_build_dedupes_and_groups(self):
+        cl = self.CL.build(self.opps)
+        self.assertEqual(len(cl.checks), 2 * len(self.opps))
+        g = self.CL.groups(cl, self.entries, here="Martlock")
+        self.assertEqual([k for k, _ in g], [("Martlock", "Comprar"), ("Lymhurst", "Comprar"), (BLACK_MARKET, "Vender")])
+        self.assertTrue(all(live is None for _, rows in g for _, live in rows))  # todo viene de la API
+
+    def test_live_prices_tick_and_verdict(self):
+        cl = self.CL.build(self.opps)
+        i = next(n for n, o in enumerate(cl.opps) if o.item_id == "A")
+        e = dict(self.entries)
+        e[("A", 1, "Lymhurst", "offer")] = (1100, self.now, "juego", [[1100, 4]])
+        v = self.CL.verdict(cl, i, e, now=self.now)
+        self.assertEqual((v["confirmed"], v["partial"]), (False, True))
+        e[("A", 1, BLACK_MARKET, "request")] = (1050, self.now, "juego", [[1050, 2]])   # el MN ha bajado
+        v = self.CL.verdict(cl, i, e, now=self.now)
+        self.assertEqual((v["confirmed"], v["still_good"]), (True, False))
+        self.assertAlmostEqual(v["profit"], 1050 * 0.96 - 1100)
+        # Pasados 30 minutos deja de contar como comprobado
+        self.assertIsNone(self.CL.live_price(e, ("A", 1, BLACK_MARKET, "request"), now=self.now + 31 * 60))
+
+    def test_sell_check_uses_order_quality_and_buy_order_fee(self):
+        cl = self.CL.build(self.opps, buy_mode="order")
+        b = next(o for o in self.opps if o.item_id == "B" and o.quality == 2)
+        keys = {c.key for c in cl.checks}
+        self.assertIn(("B", 1, BLACK_MARKET, "request"), keys)  # orden de calidad Normal acepta la Buena
+        self.assertIn(("B", 2, "Lymhurst", "request"), keys)    # comprar con orden: mira las órdenes de compra
+        self.assertIsNotNone(b)
+
+
 class LocationTests(unittest.TestCase):
     def test_ids(self):
         self.assertEqual(resolve_location("3003"), BLACK_MARKET)

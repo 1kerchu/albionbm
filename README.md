@@ -139,6 +139,17 @@ Botón **☆ Favoritos · Historial · Ganancias** en Windows y pestaña **Más*
 La pestaña **Ranking** de las Calculadoras repasa todas las recetas y ordena qué da más beneficio al
 fabricar o refinar. En Windows, favoritos y ganancias se guardan en `%APPDATA%\AlbionBM\`.
 
+## Confirmar en el juego (solo Windows)
+
+Botón **✔ Confirmar en el juego**. Toma tus mejores oportunidades (las de tu plan de inversión si has
+escrito «Mi capital», o las de más beneficio de la tabla) y hace una lista corta de qué objetos abrir y en
+qué mercado, agrupada por ciudad y pestaña (Comprar o Vender), con la ciudad donde estás primero.
+
+- Al abrir un objeto en el mercado del juego con la app en marcha, se tacha solo.
+- Abajo dice si cada oportunidad **sigue compensando** con los precios reales.
+- Un precio cuenta como comprobado durante 30 minutos.
+- Doble clic en un objeto copia su nombre para pegarlo en el buscador del mercado.
+
 ## Historial automático de compras y ventas (solo Windows)
 
 En **☆ Favoritos · Historial · Ganancias → Historial automático**. Con la app abierta y la captura

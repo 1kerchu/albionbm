@@ -73,6 +73,7 @@ class App:
         self.plan_win: Optional[tk.Toplevel] = None
         self.calc_win = None
         self.more_win = None
+        self.check_win = None
         self.settings = self._load_settings()
 
         root.title(f"Albion · Comercio y Mercado Negro  v{__version__}")
@@ -216,6 +217,7 @@ class App:
         ttk.Button(row3, text="Exportar para Claude", command=self._export).pack(side="left")
         ttk.Button(row3, text="🖩 Calculadoras", command=self._show_calculators).pack(side="left", padx=4)
         ttk.Button(row3, text="☆ Favoritos · Historial · Ganancias", command=self._show_more).pack(side="left")
+        ttk.Button(row3, text="✔ Confirmar en el juego", command=self._show_checklist).pack(side="left", padx=4)
 
         # Barra de acciones
         bar = ttk.Frame(self.root, padding=(10, 4))
@@ -568,6 +570,14 @@ class App:
             self.calc_win = CalculatorsWindow(self)
         except (OSError, ValueError) as e:
             messagebox.showerror("Albion BM", f"No se pudieron cargar las recetas: {e}")
+
+    def _show_checklist(self):
+        from .checklist_gui import ChecklistWindow
+        if self.check_win is not None and self.check_win.exists():
+            self.check_win.win.lift()
+        else:
+            self.check_win = ChecklistWindow(self)
+        return self.check_win
 
     def _show_more(self):
         from .more_gui import MoreWindow
